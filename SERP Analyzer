@@ -1,0 +1,199 @@
+import requests
+from bs4 import BeautifulSoup
+from textblob import TextBlob
+import nltk
+import pandas as pd
+
+# Download the 'punkt' tokenizer
+nltk.download('punkt')
+
+try:
+    from pytrends.request import TrendReq
+    pytrends_available = True
+except ImportError:
+    pytrends_available = False
+
+def get_google_url(country):
+    country_domains = {
+        'US': 'google.com',
+        'JP': 'google.co.jp',
+        'FR': 'google.fr',
+        # Add other country codes and their respective Google domains as needed
+    }
+    return country_domains.get(country, 'google.com')
+
+def get_search_results(query, language, country, search_engine):
+    google_domain = get_google_url(country)
+    if search_engine.lower() == 'google':
+        url = f"https://www.{google_domain}/search?q={query}&hl={language}&gl={country}"
+    elif search_engine.lower() == 'bing':
+        url = f"https://www.bing.com/search?q={query}&setlang={language}&cc={country}"
+    else:
+        return None
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+
+    response = requests.get(url, headers=headers)
+    return response.text
+
+def parse_search_results(html_content):
+    soup = BeautifulSoup(html_content, 'html.parser')
+    search_results = soup.find_all('div', class_='g', limit=10)
+
+    results = []
+    for result in search_results:
+        title = result.find('h3').get_text() if result.find('h3') else 'No Title'
+        snippet = result.find('span', {'class': 'aCOpRe'}).get_text() if result.find('span', {'class': 'aCOpRe'}) else 'No Snippet'
+        link_tag = result.find('a')
+        link = link_tag['href'] if link_tag and 'href' in link_tag.attrs else 'No Link'
+        results.append({"title": title, "snippet": snippet, "link": link})
+
+    # SERP features
+    featured_snippet = soup.find('div', class_='M8OgIe')
+    featured_snippet = featured_snippet.get_text() if featured_snippet else "Not Found"
+
+    image_opportunities = soup.find_all('g-img')
+    video_opportunities = soup.find_all('g-video')
+    knowledge_panel = soup.find('div', class_='kp-wholepage')
+
+    people_also_ask = [question.get_text() for question in soup.find_all('div', class_='related-question-pair')]
+
+    return results, featured_snippet, image_opportunities, video_opportunities, knowledge_panel, people_also_ask
+
+def fetch_page_content(link):
+    if link == 'No Link':
+        return None
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    response = requests.get(link, headers=headers)
+    return response.text
+
+def analyze_page_content(html_content):
+    if html_content is None:
+        return 'No Meta Description', 'No H1', [], []
+
+    soup = BeautifulSoup(html_content, 'html.parser')
+    meta_description = soup.find('meta', attrs={'name': 'description'})
+    meta_description = meta_description['content'] if meta_description else 'No Meta Description'
+    
+    h1 = soup.find('h1')
+    h1 = h1.get_text() if h1 else 'No H1'
+    
+    h2_tags = [h2.get_text() for h2 in soup.find_all('h2')]
+    h3_tags = [h3.get_text() for h3 in soup.find_all('h3')]
+    
+    return meta_description, h1, h2_tags, h3_tags
+
+def analyze_content(results):
+    content_analysis = []
+    for result in results:
+        if 'link' not in result:
+            print(f"Missing 'link' key in result: {result}")
+            continue
+        page_content = fetch_page_content(result['link'])
+        meta_description, h1, h2_tags, h3_tags = analyze_page_content(page_content)
+        content_analysis.append({
+            "title": result['title'],
+            "snippet": result['snippet'],
+            "meta_description": meta_description,
+            "h1": h1,
+            "h2_tags": h2_tags,
+            "h3_tags": h3_tags
+        })
+    
+    return content_analysis
+
+def determine_serp_intent(content_analysis):
+    # Simplified intent determination based on the content
+    if any("buy" in analysis['meta_description'].lower() or "purchase" in analysis['meta_description'].lower() for analysis in content_analysis):
+        return "Transactional"
+    elif any("best" in analysis['meta_description'].lower() or "top" in analysis['meta_description'].lower() for analysis in content_analysis):
+        return "Commercial"
+    else:
+        return "Informational"
+
+def generate_content_structure(content_analysis):
+    sections = []
+    for analysis in content_analysis:
+        sections.extend(analysis['h2_tags'])
+
+    common_sections = pd.Series(sections).value_counts().head(5).index.tolist()
+    
+    return {
+        "introduction": "Introduction to the topic, providing an overview and context.",
+        "sections": common_sections,
+        "conclusion": "Summary and final thoughts on the topic."
+    }
+
+def generate_seo_brief(query, language, country, search_engine):
+    html_content = get_search_results(query, language, country, search_engine)
+    results, featured_snippet, image_opportunities, video_opportunities, knowledge_panel, people_also_ask = parse_search_results(html_content)
+    content_analysis = analyze_content(results)
+    keyword_analysis = analyze_content([{"title": result['title'], "snippet": result['snippet']} for result in results])
+    trending_keywords = get_trending_keywords(query, language, country) if pytrends_available else []
+    content_structure = generate_content_structure(content_analysis)
+    serp_intent = determine_serp_intent(content_analysis)
+
+    page_title = f"{query} - Comprehensive Guide"
+    meta_description = f"Explore everything about {query}. A detailed guide covering top insights and FAQs."
+
+    seo_brief = {
+        "query": query,
+        "language": language,
+        "country": country,
+        "search_engine": search_engine,
+        "page_title": page_title,
+        "meta_description": meta_description,
+        "serp_intent": serp_intent,
+        "top_keywords": keyword_analysis,
+        "trending_keywords": trending_keywords.to_dict('records') if pytrends_available else [],
+        "content_structure": content_structure,
+        "serp_features": {
+            "featured_snippet": featured_snippet,
+            "image_opportunities": "Yes" if image_opportunities else "No",
+            "video_opportunities": "Yes" if video_opportunities else "No",
+            "knowledge_panel": "Found" if knowledge_panel else "Not Found",
+            "people_also_ask": people_also_ask
+        }
+    }
+
+    return seo_brief
+
+def display_seo_brief(seo_brief):
+    print(f"Page Title: {seo_brief['page_title']}")
+    print(f"Meta Description: {seo_brief['meta_description']}")
+    print(f"SERP Intent: {seo_brief['serp_intent']}")
+    print("\nTop Keywords:")
+    top_keywords_df = pd.DataFrame(seo_brief['top_keywords'], columns=['Keyword', 'Count'])
+    print(top_keywords_df.to_string(index=False))
+    print("\nTrending Keywords:")
+    if seo_brief['trending_keywords']:
+        trending_keywords_df = pd.DataFrame(seo_brief['trending_keywords'])
+        print(trending_keywords_df.to_string(index=False))
+    print("\nContent Structure:")
+    content_structure = seo_brief['content_structure']
+    print(f"Introduction: {content_structure['introduction']}")
+    for section in content_structure['sections']:
+        print(f"Section: {section}")
+    print(f"Conclusion: {content_structure['conclusion']}")
+    print("\nSERP Features:")
+    serp_features = seo_brief['serp_features']
+    print(f"Featured Snippet: {serp_features['featured_snippet']}")
+    print(f"Image Opportunities: {serp_features['image_opportunities']}")
+    print(f"Video Opportunities: {serp_features['video_opportunities']}")
+    print(f"Knowledge Panel: {serp_features['knowledge_panel']}")
+    print("People Also Ask:")
+    for question in serp_features['people_also_ask']:
+        print(f" - {question}")
+
+# Example usage
+query = "ERP software"
+language = "en"
+country = "US"
+search_engine = "google"
+
+seo_brief = generate_seo_brief(query, language, country, search_engine)
+display_seo_brief(seo_brief)
