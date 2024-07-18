@@ -1,0 +1,52 @@
+import requests
+import pandas as pd
+
+# Constants
+API_KEY = 'your_conductor_api_key'
+BASE_URL = 'https://api.conductor.com/v1/keywords/searchvolume'
+COUNTRIES = ['USA', 'UK', 'Australia', 'New Zealand', 'India', 'Singapore', 'Canada', 'France', 'Germany', 'Spain', 'Italy', 'Japan']
+
+# Function to fetch search volume for a keyword in a specified country
+def fetch_search_volume(keyword, country):
+    headers = {'Authorization': f'Bearer {API_KEY}'}
+    params = {'keyword': keyword, 'country': country}
+    response = requests.get(BASE_URL, headers=headers, params=params)
+    
+    if response.status_code == 200:
+        data = response.json()
+        return data['searchVolume']
+    else:
+        print(f"Failed to fetch data for {country}: {response.status_code}")
+        return None
+
+# Function to get search volume for multiple countries
+def get_search_volume(keyword, countries):
+    search_volumes = {}
+    for country in countries:
+        volume = fetch_search_volume(keyword, country)
+        if volume is not None:
+            search_volumes[country] = volume
+    return search_volumes
+
+# Function to display search volumes in a table
+def display_search_volumes(keyword, search_volumes):
+    df = pd.DataFrame(list(search_volumes.items()), columns=['Country', 'Search Volume'])
+    df.set_index('Country', inplace=True)
+    print(f"Search Volume for '{keyword}'")
+    print(df)
+
+# Main function to handle user input and display search volumes
+def main():
+    keyword = input("Enter the keyword: ")
+    selected_countries = input(f"Enter countries from the following list, separated by commas:\n{', '.join(COUNTRIES)}\n").split(',')
+    selected_countries = [country.strip() for country in selected_countries if country.strip() in COUNTRIES]
+    
+    if not selected_countries:
+        print("No valid countries selected. Please try again.")
+        return
+    
+    search_volumes = get_search_volume(keyword, selected_countries)
+    display_search_volumes(keyword, search_volumes)
+
+if __name__ == "__main__":
+    main()
