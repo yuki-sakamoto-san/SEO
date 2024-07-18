@@ -2,21 +2,27 @@ import requests
 import pandas as pd
 
 # Constants
-API_KEY = 'your_conductor_api_key'
+API_KEY = 'your_conductor_api_key'  # Replace with your actual API key
 BASE_URL = 'https://api.conductor.com/v1/keywords/searchvolume'
 COUNTRIES = ['USA', 'UK', 'Australia', 'New Zealand', 'India', 'Singapore', 'Canada', 'France', 'Germany', 'Spain', 'Italy', 'Japan']
 
 # Function to fetch search volume for a keyword in a specified country
 def fetch_search_volume(keyword, country):
-    headers = {'Authorization': f'Bearer {API_KEY}'}
-    params = {'keyword': keyword, 'country': country}
+    headers = {
+        'Authorization': f'Bearer {API_KEY}',
+        'Content-Type': 'application/json'
+    }
+    params = {
+        'keyword': keyword,
+        'country': country
+    }
     response = requests.get(BASE_URL, headers=headers, params=params)
     
     if response.status_code == 200:
         data = response.json()
         return data['searchVolume']
     else:
-        print(f"Failed to fetch data for {country}: {response.status_code}")
+        print(f"Failed to fetch data for {country}: {response.status_code} - {response.text}")
         return None
 
 # Function to get search volume for multiple countries
