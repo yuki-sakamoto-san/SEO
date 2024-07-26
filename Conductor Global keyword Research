@@ -1,24 +1,25 @@
-pip install conductor-api requests openpyxl pandas
-
-import os
 import pandas as pd
-from conductor_api import client
+from conductor import ConductorClient
 
 def get_conductor_data(client, keyword, country):
-    response = client.keywords.search_volumes(
-        keyword=keyword,
-        geo_code=country
-    )
-    data = response.json()
-    return data
+    try:
+        response = client.keywords.search_volumes(
+            keyword=keyword,
+            geo_code=country
+        )
+        data = response.json()
+        return data
+    except Exception as e:
+        print(f"Error fetching data for keyword '{keyword}' in country '{country}': {e}")
+        return None
 
 def parse_conductor_data(data):
     # Parse the Conductor data to extract relevant information
-    records = data['records']
+    records = data.get('records', [])
     parsed_data = []
     for record in records:
         parsed_data.append({
-            'Keyword': record['keyword'],
+            'Keyword': record.get('keyword', 'N/A'),
             'Search Volume': record.get('search_volume', 'N/A'),
             'SERP Features': record.get('serp_features', 'N/A'),
             'Keyword Difficulty': record.get('keyword_difficulty', 'N/A')
@@ -36,13 +37,9 @@ def export_to_excel(dataframes, output_file):
 
 def main():
     # User inputs
+    api_key = input("Enter your Conductor API key: ")
     keywords = input("Enter the SEO keywords (comma separated): ").split(',')
     countries = input("Enter the countries (comma separated, e.g., 'us,uk,de'): ").split(',')
-    api_key = os.getenv('CONDUCTOR_API_KEY')  # Ensure your Conductor API key is set as an environment variable
-
-    if not api_key:
-        print("API key is not set. Please set it as an environment variable.")
-        return
 
     client = ConductorClient(api_key=api_key)
 
@@ -56,9 +53,10 @@ def main():
             keyword = keyword.strip()
             print(f"Fetching data for keyword '{keyword}' in country '{country}'")
             data = get_conductor_data(client, keyword, country)
-            parsed_data = parse_conductor_data(data)
-            df = create_dataframe(parsed_data)
-            all_data.append(df)
+            if data:
+                parsed_data = parse_conductor_data(data)
+                df = create_dataframe(parsed_data)
+                all_data.append(df)
         
         # Concatenate all dataframes for the current country
         if all_data:
