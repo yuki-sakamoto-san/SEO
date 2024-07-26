@@ -1,0 +1,77 @@
+import requests
+import pandas as pd
+
+def get_conductor_data(api_key, shared_secret, keyword, country):
+    url = "https://api.conductor.com/v1/keyword"
+    headers = {
+        'Authorization': f'Bearer {api_key}:{shared_secret}'
+    }
+    params = {
+        'keyword': keyword,
+        'geo_code': country
+    }
+    try:
+        response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()  # Raise an error for bad status codes
+        data = response.json()
+        return data
+    except requests.RequestException as e:
+        print(f"Error fetching data for keyword '{keyword}' in country '{country}': {e}")
+        return None
+
+def parse_conductor_data(data):
+    # Parse the Conductor data to extract relevant information
+    records = data.get('records', [])
+    parsed_data = []
+    for record in records:
+        parsed_data.append({
+            'Keyword': record.get('keyword', 'N/A'),
+            'Search Volume': record.get('search_volume', 'N/A'),
+            'SERP Features': record.get('serp_features', 'N/A'),
+            'Keyword Difficulty': record.get('keyword_difficulty', 'N/A')
+        })
+    return parsed_data
+
+def create_dataframe(parsed_data):
+    df = pd.DataFrame(parsed_data)
+    return df
+
+def export_to_excel(dataframes, output_file):
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        for country, df in dataframes.items():
+            df.to_excel(writer, sheet_name=country, index=False)
+
+def main():
+    # User inputs
+    api_key = input("Enter your Conductor API key: ")
+    shared_secret = input("Enter your Conductor API shared secret: ")
+    keywords = input("Enter the SEO keywords (comma separated): ").split(',')
+    countries = input("Enter the countries (comma separated, e.g., 'us,uk,de'): ").split(',')
+
+    all_dataframes = {}
+
+    for country in countries:
+        country = country.strip()
+        all_data = []
+        
+        for keyword in keywords:
+            keyword = keyword.strip()
+            print(f"Fetching data for keyword '{keyword}' in country '{country}'")
+            data = get_conductor_data(api_key, shared_secret, keyword, country)
+            if data:
+                parsed_data = parse_conductor_data(data)
+                df = create_dataframe(parsed_data)
+                all_data.append(df)
+        
+        # Concatenate all dataframes for the current country
+        if all_data:
+            country_df = pd.concat(all_data, ignore_index=True)
+            all_dataframes[country] = country_df
+
+    # Export all dataframes to an Excel file
+    output_file = "conductor_seo_analysis.xlsx"
+    export_to_excel(all_dataframes, output_file)
+    print(f"Data exported to {output_file}")
+
+if __name__ == "__main__":
+    main()
