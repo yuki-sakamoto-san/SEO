@@ -1,17 +1,32 @@
+import hashlib
+import hmac
+import time
 import requests
 import pandas as pd
 
+def get_signature(api_key, shared_secret, method, endpoint, timestamp):
+    message = f"{api_key}{method}{endpoint}{timestamp}".encode('utf-8')
+    signature = hmac.new(shared_secret.encode('utf-8'), message, hashlib.sha256).hexdigest()
+    return signature
+
 def get_conductor_data(api_key, shared_secret, keyword, country):
-    # Example endpoint, make sure it matches Conductor's API endpoint for search volumes
-    url = "https://api.conductor.com/v3/keywords/search-volumes"
+    endpoint = "/v3/keywords/search-volumes"
+    url = f"https://api.conductor.com{endpoint}"
+    timestamp = str(int(time.time()))
+    signature = get_signature(api_key, shared_secret, "POST", endpoint, timestamp)
+    
     headers = {
         'Content-Type': 'application/json',
-        'Authorization': f'Bearer {api_key}:{shared_secret}'
+        'API-Key': api_key,
+        'API-Signature': signature,
+        'API-Timestamp': timestamp
     }
+    
     payload = {
         'keywords': [keyword],
         'geo_code': country
     }
+    
     try:
         response = requests.post(url, headers=headers, json=payload)
         response.raise_for_status()  # Raise an error for bad status codes
@@ -81,3 +96,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
