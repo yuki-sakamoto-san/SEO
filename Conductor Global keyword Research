@@ -1,54 +1,71 @@
+import os
 import requests
 import pandas as pd
 
-# Constants
-API_KEY = 'your_conductor_api_key'  # Replace with your actual API key
-BASE_URL = 'https://api.conductor.com/v1/keywords/searchvolume'
-COUNTRIES = ['USA', 'UK', 'Australia', 'New Zealand', 'India', 'Singapore', 'Canada', 'France', 'Germany', 'Spain', 'Italy', 'Japan']
-
-def fetch_search_volume(keyword, country):
-    headers = {
-        'Authorization': f'Bearer {API_KEY}',
-        'Content-Type': 'application/json'
-    }
+def get_seo_data(api_key, keyword, country):
+    url = "https://api.semrush.com/"
     params = {
-        'keyword': keyword,
-        'country': country
+        'type': 'phrase_all',
+        'key': api_key,
+        'phrase': keyword,
+        'database': country,
+        'export_columns': 'Ph,Nq,Cp,Kd'
     }
-    response = requests.get(BASE_URL, headers=headers, params=params)
-    
-    if response.status_code == 200:
-        data = response.json()
-        return data['searchVolume']
-    else:
-        print(f"Failed to fetch data for {country}: {response.status_code} - {response.text}")
-        return None
+    response = requests.get(url, params=params)
+    response.raise_for_status()  # Raise an error for bad status codes
+    data = response.text
+    return data
 
-def get_search_volume(keyword, countries):
-    search_volumes = {}
-    for country in countries:
-        volume = fetch_search_volume(keyword, country)
-        if volume is not None:
-            search_volumes[country] = volume
-    return search_volumes
+def parse_seo_data(data):
+    # Parse the SEMrush data (CSV format in the response)
+    lines = data.strip().split('\n')
+    headers = lines[0].split(';')
+    rows = [line.split(';') for line in lines[1:]]
+    return headers, rows
 
-def display_search_volumes(keyword, search_volumes):
-    df = pd.DataFrame(list(search_volumes.items()), columns=['Country', 'Search Volume'])
-    df.set_index('Country', inplace=True)
-    print(f"Search Volume for '{keyword}'")
-    print(df)
+def create_dataframe(headers, rows):
+    df = pd.DataFrame(rows, columns=headers)
+    return df
+
+def export_to_excel(dataframes, output_file):
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        for country, df in dataframes.items():
+            df.to_excel(writer, sheet_name=country, index=False)
 
 def main():
-    keyword = input("Enter the keyword: ")
-    selected_countries = input(f"Enter countries from the following list, separated by commas:\n{', '.join(COUNTRIES)}\n").split(',')
-    selected_countries = [country.strip() for country in selected_countries if country.strip() in COUNTRIES]
-    
-    if not selected_countries:
-        print("No valid countries selected. Please try again.")
+    # User inputs
+    keywords = input("Enter the SEO keywords (comma separated): ").split(',')
+    countries = input("Enter the countries (comma separated, e.g., 'us,uk,de'): ").split(',')
+    api_key = os.getenv('SEMRUSH_API_KEY')  # Ensure your SEMrush API key is set as an environment variable
+
+    if not api_key:
+        print("API key is not set. Please set it as an environment variable.")
         return
-    
-    search_volumes = get_search_volume(keyword, selected_countries)
-    display_search_volumes(keyword, search_volumes)
+
+    all_dataframes = {}
+
+    for country in countries:
+        country = country.strip()
+        all_data = []
+        
+        for keyword in keywords:
+            keyword = keyword.strip()
+            print(f"Fetching data for keyword '{keyword}' in country '{country}'")
+            data = get_seo_data(api_key, keyword, country)
+            headers, rows = parse_seo_data(data)
+            df = create_dataframe(headers, rows)
+            all_data.append(df)
+        
+        # Concatenate all dataframes for the current country
+        if all_data:
+            country_df = pd.concat(all_data, ignore_index=True)
+            all_dataframes[country] = country_df
+
+    # Export all dataframes to an Excel file
+    output_file = "seo_analysis.xlsx"
+    export_to_excel(all_dataframes, output_file)
+    print(f"Data exported to {output_file}")
 
 if __name__ == "__main__":
     main()
+
