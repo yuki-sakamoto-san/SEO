@@ -59,8 +59,14 @@ def create_dataframe(parsed_data):
 
 def export_to_excel(dataframes, output_file):
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        if not dataframes:
+            print("No data to write to Excel.")
+            return
         for country, df in dataframes.items():
-            df.to_excel(writer, sheet_name=country, index=False)
+            if not df.empty:
+                df.to_excel(writer, sheet_name=country, index=False)
+            else:
+                print(f"No data for country: {country}")
 
 def main():
     # User inputs
@@ -100,4 +106,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
