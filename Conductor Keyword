@@ -2,35 +2,41 @@ import requests
 import pandas as pd
 
 def get_conductor_data(api_key, shared_secret, keyword, country):
-    url = "https://api.conductor.com/v1/keyword"
+    # Example endpoint, make sure it matches Conductor's API endpoint for search volumes
+    url = "https://api.conductor.com/v3/keywords/search-volumes"
     headers = {
+        'Content-Type': 'application/json',
         'Authorization': f'Bearer {api_key}:{shared_secret}'
     }
-    params = {
-        'keyword': keyword,
+    payload = {
+        'keywords': [keyword],
         'geo_code': country
     }
     try:
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.post(url, headers=headers, json=payload)
         response.raise_for_status()  # Raise an error for bad status codes
         data = response.json()
         return data
     except requests.RequestException as e:
         print(f"Error fetching data for keyword '{keyword}' in country '{country}': {e}")
+        print(response.text)  # Print response text for debugging
         return None
 
 def parse_conductor_data(data):
     # Parse the Conductor data to extract relevant information
-    records = data.get('records', [])
-    parsed_data = []
-    for record in records:
-        parsed_data.append({
-            'Keyword': record.get('keyword', 'N/A'),
-            'Search Volume': record.get('search_volume', 'N/A'),
-            'SERP Features': record.get('serp_features', 'N/A'),
-            'Keyword Difficulty': record.get('keyword_difficulty', 'N/A')
-        })
-    return parsed_data
+    if 'records' in data:
+        records = data['records']
+        parsed_data = []
+        for record in records:
+            parsed_data.append({
+                'Keyword': record.get('keyword', 'N/A'),
+                'Search Volume': record.get('search_volume', 'N/A'),
+                'SERP Features': record.get('serp_features', 'N/A'),
+                'Keyword Difficulty': record.get('keyword_difficulty', 'N/A')
+            })
+        return parsed_data
+    else:
+        return []
 
 def create_dataframe(parsed_data):
     df = pd.DataFrame(parsed_data)
