@@ -1,26 +1,33 @@
-import hashlib
-import hmac
 import time
+import hashlib
 import requests
 import pandas as pd
 
-def get_signature(shared_secret, timestamp):
-    message = f"{timestamp}".encode('utf-8')
-    signature = hmac.new(shared_secret.encode('utf-8'), message, hashlib.sha256).hexdigest()
-    return signature
+def gen_api_sig(api_key, shared_secret):
+    m = hashlib.md5()
+    m.update(api_key.encode())
+    m.update(shared_secret.encode())
+    epoch_sec = int(time.time())
+    m.update(str(epoch_sec).encode())
+    hex_digest = m.hexdigest()
+    return hex_digest
 
 def build_signed_url(base_url, api_key, shared_secret):
-    timestamp = str(int(time.time()))
-    signature = get_signature(shared_secret, timestamp)
+    signature = gen_api_sig(api_key, shared_secret)
     signed_url = f"{base_url}?apiKey={api_key}&sig={signature}"
     return signed_url
 
-def get_conductor_data(signed_url):
+def get_conductor_data(signed_url, region=None):
     headers = {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
     }
+    cookies = {}
+    if region:
+        cookies['cndr_region'] = region
+
     try:
-        response = requests.get(signed_url, headers=headers)
+        response = requests.get(signed_url, headers=headers, cookies=cookies)
         response.raise_for_status()  # Raise an error for bad status codes
         data = response.json()
         return data
@@ -61,8 +68,9 @@ def main():
     shared_secret = input("Enter your Conductor API shared secret: ")
     keywords = input("Enter the SEO keywords (comma separated): ").split(',')
     countries = input("Enter the countries (comma separated, e.g., 'us,uk,de'): ").split(',')
+    region = input("Enter the region (optional, e.g., 'eu-west-1' for EU): ")
 
-    base_url = "https://api.conductor.com/v3/keywords/search-volumes"
+    base_url = "https://app.conductor.com/v3/keywords/search-volumes"
     
     all_dataframes = {}
 
@@ -74,7 +82,7 @@ def main():
             keyword = keyword.strip()
             print(f"Fetching data for keyword '{keyword}' in country '{country}'")
             signed_url = build_signed_url(base_url, api_key, shared_secret)
-            data = get_conductor_data(signed_url)
+            data = get_conductor_data(signed_url, region)
             if data:
                 parsed_data = parse_conductor_data(data)
                 df = create_dataframe(parsed_data)
