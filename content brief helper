@@ -1,0 +1,165 @@
+import os
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from collections import Counter
+from bs4 import BeautifulSoup
+import requests
+
+def google_search(keyword, location, api_key, cse_id):
+    try:
+        # Set up the Custom Search API client
+        service = build("customsearch", "v1", developerKey=api_key)
+        
+        # Perform the search
+        result = service.cse().list(q=keyword, cx=cse_id, gl=location).execute()
+        return result['items']
+    except HttpError as e:
+        print(f"An error occurred: {e}")
+        return []
+
+def analyze_search_results(search_results):
+    secondary_keywords = Counter()
+    phrases = Counter()
+    meta_descriptions = []
+    h2_tags = []
+    image_opportunities = 0
+    video_opportunities = 0
+    snippet_opportunities = 0
+
+    for result in search_results:
+        url = result['link']
+        try:
+            response = requests.get(url)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.content, 'html.parser')
+                
+                # Extract meta description
+                meta_description = soup.find('meta', attrs={'name': 'description'})
+                if meta_description:
+                    meta_descriptions.append(meta_description.get('content', ''))
+                
+                # Extract H2 tags
+                h2s = [h2.get_text() for h2 in soup.find_all('h2')]
+                h2_tags.extend(h2s)
+                
+                # Extract secondary keywords and phrases
+                text = soup.get_text()
+                words = text.split()
+                secondary_keywords.update(words)
+                phrases.update([f"{words[i]} {words[i+1]}" for i in range(len(words)-1)])
+                
+                # Check for image and video opportunities
+                images = soup.find_all('img')
+                if images:
+                    image_opportunities += 1
+                videos = soup.find_all('video')
+                if videos:
+                    video_opportunities += 1
+
+                # Check for featured snippet opportunities
+                if 'featured snippet' in text.lower():
+                    snippet_opportunities += 1
+
+        except requests.RequestException as e:
+            print(f"Failed to fetch {url}: {e}")
+    
+    # Get the most common secondary keywords and phrases
+    common_secondary_keywords = [keyword for keyword, _ in secondary_keywords.most_common(10)]
+    common_phrases = [phrase for phrase, _ in phrases.most_common(10)]
+    
+    return {
+        'secondary_keywords': common_secondary_keywords,
+        'phrases': common_phrases,
+        'meta_descriptions': meta_descriptions,
+        'h2_tags': h2_tags,
+        'image_opportunities': image_opportunities,
+        'video_opportunities': video_opportunities,
+        'snippet_opportunities': snippet_opportunities
+    }
+
+def generate_content_brief(keyword, location, search_results, analysis):
+    # Template for the content brief
+    content_brief = f"""
+    Content Brief for SEO Keyword: {keyword}
+    Location: {location}
+    
+    1. Target SEO Keyword:
+       - {keyword}
+    
+    2. Search Results Analysis:
+    """
+    
+    for index, result in enumerate(search_results, start=1):
+        content_brief += f"""
+        {index}. Title: {result['title']}
+           URL: {result['link']}
+           Snippet: {result['snippet']}
+        """
+    
+    content_brief += """
+    
+    3. Recommended Content Structure:
+       - Introduction: Briefly introduce the topic and its importance.
+       - Main Points: List and elaborate on the main points related to the keyword.
+       - Conclusion: Summarize the key takeaways and encourage reader engagement.
+    
+    4. Additional SEO Recommendations:
+       - Include relevant keywords naturally within the content.
+       - Use headings and subheadings to improve readability.
+       - Incorporate images and videos where applicable.
+       - Ensure the content is mobile-friendly.
+    
+    5. Recommended Secondary Keywords:
+       - """ + ", ".join(analysis['secondary_keywords']) + """
+    
+    6. Recommended Phrases to Include:
+       - """ + ", ".join(analysis['phrases']) + """
+    
+    7. Meta Descriptions:
+       - """ + "\n       - ".join(analysis['meta_descriptions']) + """
+    
+    8. Suggested H2 Tags:
+       - """ + "\n       - ".join(analysis['h2_tags']) + """
+    
+    9. Featured Snippet Opportunities:
+       - Yes, consider optimizing for featured snippets.
+       - Number of snippets found: """ + str(analysis['snippet_opportunities']) + """
+    
+    10. Image and Video Opportunities:
+       - Images: """ + ("Yes" if analysis['image_opportunities'] > 0 else "No") + """
+       - Videos: """ + ("Yes" if analysis['video_opportunities'] > 0 else "No") + """
+    """
+    
+    return content_brief
+
+def main():
+    # User inputs
+    keyword = input("Enter the SEO keyword: ")
+    location = input("Enter the Google location (e.g., 'us' for United States): ")
+    
+    # API credentials
+    api_key = 'YOUR API KEY FROM GOOGLE'  # Replace with your actual API key
+    cse_id = 'YOUR CSE ID FROM GOOGLE'  # Replace with your actual Custom Search Engine ID
+
+    if not api_key or not cse_id:
+        print("API key and/or CSE ID are not set. Please set them as environment variables.")
+        return
+    
+    # Get search results
+    search_results = google_search(keyword, location, api_key, cse_id)
+    
+    if not search_results:
+        print("No search results found or an error occurred.")
+        return
+    
+    # Analyze search results for additional SEO insights
+    analysis = analyze_search_results(search_results)
+    
+    # Generate content brief
+    content_brief = generate_content_brief(keyword, location, search_results, analysis)
+    
+    # Print the content brief
+    print(content_brief)
+
+if __name__ == "__main__":
+    main()
