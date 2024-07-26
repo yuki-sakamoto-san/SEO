@@ -3,7 +3,7 @@ from conductor import ConductorClient
 
 def get_conductor_data(client, keyword, country):
     try:
-        response = client.keywords.search_volumes(
+        response = client.keywords.get_search_volume(
             keyword=keyword,
             geo_code=country
         )
@@ -38,10 +38,11 @@ def export_to_excel(dataframes, output_file):
 def main():
     # User inputs
     api_key = input("Enter your Conductor API key: ")
+    shared_secret = input("Enter your Conductor API shared secret: ")
     keywords = input("Enter the SEO keywords (comma separated): ").split(',')
     countries = input("Enter the countries (comma separated, e.g., 'us,uk,de'): ").split(',')
 
-    client = ConductorClient(api_key=api_key)
+    client = ConductorClient(api_key=api_key, shared_secret=shared_secret)
 
     all_dataframes = {}
 
