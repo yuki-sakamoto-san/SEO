@@ -26,6 +26,10 @@ def get_conductor_data(signed_url, region=None):
     if region:
         cookies['cndr_region'] = region
 
+    print(f"Making request to URL: {signed_url}")
+    print(f"Headers: {headers}")
+    print(f"Cookies: {cookies}")
+
     try:
         response = requests.get(signed_url, headers=headers, cookies=cookies)
         response.raise_for_status()  # Raise an error for bad status codes
@@ -34,7 +38,9 @@ def get_conductor_data(signed_url, region=None):
     except requests.RequestException as e:
         print(f"Error fetching data: {e}")
         if response is not None:
-            print(response.text)  # Print response text for debugging
+            print(f"Response status code: {response.status_code}")
+            print(f"Response headers: {response.headers}")
+            print(f"Response text: {response.text}")
         return None
 
 def parse_conductor_data(data):
