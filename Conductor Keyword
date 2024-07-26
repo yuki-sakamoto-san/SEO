@@ -4,37 +4,30 @@ import time
 import requests
 import pandas as pd
 
-def get_signature(api_key, shared_secret, method, endpoint, timestamp):
-    message = f"{api_key}{method}{endpoint}{timestamp}".encode('utf-8')
+def get_signature(shared_secret, timestamp):
+    message = f"{timestamp}".encode('utf-8')
     signature = hmac.new(shared_secret.encode('utf-8'), message, hashlib.sha256).hexdigest()
     return signature
 
-def get_conductor_data(api_key, shared_secret, keyword, country):
-    endpoint = "/v3/keywords/search-volumes"
-    url = f"https://api.conductor.com{endpoint}"
+def build_signed_url(base_url, api_key, shared_secret):
     timestamp = str(int(time.time()))
-    signature = get_signature(api_key, shared_secret, "POST", endpoint, timestamp)
-    
+    signature = get_signature(shared_secret, timestamp)
+    signed_url = f"{base_url}?apiKey={api_key}&sig={signature}"
+    return signed_url
+
+def get_conductor_data(signed_url):
     headers = {
-        'Content-Type': 'application/json',
-        'API-Key': api_key,
-        'API-Signature': signature,
-        'API-Timestamp': timestamp
+        'Content-Type': 'application/json'
     }
-    
-    payload = {
-        'keywords': [keyword],
-        'geo_code': country
-    }
-    
     try:
-        response = requests.post(url, headers=headers, json=payload)
+        response = requests.get(signed_url, headers=headers)
         response.raise_for_status()  # Raise an error for bad status codes
         data = response.json()
         return data
     except requests.RequestException as e:
-        print(f"Error fetching data for keyword '{keyword}' in country '{country}': {e}")
-        print(response.text)  # Print response text for debugging
+        print(f"Error fetching data: {e}")
+        if response is not None:
+            print(response.text)  # Print response text for debugging
         return None
 
 def parse_conductor_data(data):
@@ -69,6 +62,8 @@ def main():
     keywords = input("Enter the SEO keywords (comma separated): ").split(',')
     countries = input("Enter the countries (comma separated, e.g., 'us,uk,de'): ").split(',')
 
+    base_url = "https://api.conductor.com/v3/keywords/search-volumes"
+    
     all_dataframes = {}
 
     for country in countries:
@@ -78,7 +73,8 @@ def main():
         for keyword in keywords:
             keyword = keyword.strip()
             print(f"Fetching data for keyword '{keyword}' in country '{country}'")
-            data = get_conductor_data(api_key, shared_secret, keyword, country)
+            signed_url = build_signed_url(base_url, api_key, shared_secret)
+            data = get_conductor_data(signed_url)
             if data:
                 parsed_data = parse_conductor_data(data)
                 df = create_dataframe(parsed_data)
