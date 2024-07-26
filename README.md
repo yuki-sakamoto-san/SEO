@@ -15,3 +15,17 @@ This will be a score from **0 to 1** on how relevant the text is to the query th
 This framework allows us to understand how relevant our content is to a given query. 
 
 <img width="562" alt="Screenshot 2024-07-26 at 10 43 03" src="https://github.com/user-attachments/assets/927d0161-0bb4-4bb3-9168-6c164e5c2eeb">
+
+### Content Brief Generator
+
+This Python framework helps you generate a content brief using your Google API Key and Custom Search Engine ID from Google.
+
+It scrapes the top 10 results for a specified location and query, running the job automatically. Additionally, it analyzes whether you should optimize for featured snippets, images, and videos, similar to a SERP analyzer.
+
+**Note** Make sure to obtain your Google API Key and [Custom Search Engine](https://console.cloud.google.com/apis/) ID first! You can get your API Key at Google Cloud Console and your [Custom Search Engine ID](https://developers.google.com/custom-search/v1/introduction) at Google Custom Search.
+
+
+
+
+
+
