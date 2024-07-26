@@ -1,9 +1,6 @@
 import os
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from collections import Counter
-from bs4 import BeautifulSoup
-import requests
 
 def google_search(keyword, location, api_key, cse_id):
     try:
@@ -17,67 +14,44 @@ def google_search(keyword, location, api_key, cse_id):
         print(f"An error occurred: {e}")
         return []
 
-def analyze_search_results(search_results):
-    secondary_keywords = Counter()
-    phrases = Counter()
-    meta_descriptions = []
-    h2_tags = []
+def analyze_serp_features(search_results):
     image_opportunities = 0
     video_opportunities = 0
     snippet_opportunities = 0
+    people_also_ask = []
+    other_serp_features = []
 
     for result in search_results:
-        url = result['link']
-        try:
-            response = requests.get(url)
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.content, 'html.parser')
-                
-                # Extract meta description
-                meta_description = soup.find('meta', attrs={'name': 'description'})
-                if meta_description:
-                    meta_descriptions.append(meta_description.get('content', ''))
-                
-                # Extract H2 tags
-                h2s = [h2.get_text() for h2 in soup.find_all('h2')]
-                h2_tags.extend(h2s)
-                
-                # Extract secondary keywords and phrases
-                text = soup.get_text()
-                words = text.split()
-                secondary_keywords.update(words)
-                phrases.update([f"{words[i]} {words[i+1]}" for i in range(len(words)-1)])
-                
-                # Check for image and video opportunities
-                images = soup.find_all('img')
-                if images:
-                    image_opportunities += 1
-                videos = soup.find_all('video')
-                if videos:
-                    video_opportunities += 1
+        title = result['title'].lower()
+        snippet = result.get('snippet', '').lower()
 
-                # Check for featured snippet opportunities
-                if 'featured snippet' in text.lower():
-                    snippet_opportunities += 1
+        if 'image' in title or 'photo' in title or 'picture' in title or 'img' in snippet:
+            image_opportunities += 1
+        
+        if 'video' in title or 'youtube' in snippet:
+            video_opportunities += 1
 
-        except requests.RequestException as e:
-            print(f"Failed to fetch {url}: {e}")
-    
-    # Get the most common secondary keywords and phrases
-    common_secondary_keywords = [keyword for keyword, _ in secondary_keywords.most_common(10)]
-    common_phrases = [phrase for phrase, _ in phrases.most_common(10)]
-    
+        if 'featured snippet' in snippet:
+            snippet_opportunities += 1
+
+        if 'people also ask' in title or 'people also ask' in snippet:
+            people_also_ask.append(result['title'])
+
+        if 'knowledge graph' in title or 'knowledge graph' in snippet:
+            other_serp_features.append('Knowledge Graph')
+        
+        if 'site links' in title or 'site links' in snippet:
+            other_serp_features.append('Site Links')
+
     return {
-        'secondary_keywords': common_secondary_keywords,
-        'phrases': common_phrases,
-        'meta_descriptions': meta_descriptions,
-        'h2_tags': h2_tags,
         'image_opportunities': image_opportunities,
         'video_opportunities': video_opportunities,
-        'snippet_opportunities': snippet_opportunities
+        'snippet_opportunities': snippet_opportunities,
+        'people_also_ask': people_also_ask,
+        'other_serp_features': other_serp_features
     }
 
-def generate_content_brief(keyword, location, search_results, analysis):
+def generate_content_brief(keyword, location, search_results, serp_analysis):
     # Template for the content brief
     content_brief = f"""
     Content Brief for SEO Keyword: {keyword}
@@ -109,25 +83,20 @@ def generate_content_brief(keyword, location, search_results, analysis):
        - Incorporate images and videos where applicable.
        - Ensure the content is mobile-friendly.
     
-    5. Recommended Secondary Keywords:
-       - """ + ", ".join(analysis['secondary_keywords']) + """
+    5. Image Opportunities:
+       - """ + ("Yes" if serp_analysis['image_opportunities'] > 0 else "No") + """
     
-    6. Recommended Phrases to Include:
-       - """ + ", ".join(analysis['phrases']) + """
+    6. Video Opportunities:
+       - """ + ("Yes" if serp_analysis['video_opportunities'] > 0 else "No") + """
     
-    7. Meta Descriptions:
-       - """ + "\n       - ".join(analysis['meta_descriptions']) + """
+    7. Featured Snippet Opportunities:
+       - """ + ("Yes" if serp_analysis['snippet_opportunities'] > 0 else "No") + """
     
-    8. Suggested H2 Tags:
-       - """ + "\n       - ".join(analysis['h2_tags']) + """
+    8. People Also Ask Questions:
+       - """ + "\n       - ".join(serp_analysis['people_also_ask']) + """
     
-    9. Featured Snippet Opportunities:
-       - Yes, consider optimizing for featured snippets.
-       - Number of snippets found: """ + str(analysis['snippet_opportunities']) + """
-    
-    10. Image and Video Opportunities:
-       - Images: """ + ("Yes" if analysis['image_opportunities'] > 0 else "No") + """
-       - Videos: """ + ("Yes" if analysis['video_opportunities'] > 0 else "No") + """
+    9. Other SERP Features:
+       - """ + "\n       - ".join(serp_analysis['other_serp_features']) + """
     """
     
     return content_brief
@@ -138,8 +107,8 @@ def main():
     location = input("Enter the Google location (e.g., 'us' for United States): ")
     
     # API credentials
-    api_key = 'YOUR API KEY FROM GOOGLE'  # Replace with your actual API key
-    cse_id = 'YOUR CSE ID FROM GOOGLE'  # Replace with your actual Custom Search Engine ID
+    api_key = 'YOUR API KEY'  # Replace with your actual API key
+    cse_id = 'CSE ID FROM GOOGLE'  # Replace with your actual Custom Search Engine ID
 
     if not api_key or not cse_id:
         print("API key and/or CSE ID are not set. Please set them as environment variables.")
@@ -152,11 +121,11 @@ def main():
         print("No search results found or an error occurred.")
         return
     
-    # Analyze search results for additional SEO insights
-    analysis = analyze_search_results(search_results)
+    # Analyze search results for SERP features
+    serp_analysis = analyze_serp_features(search_results)
     
     # Generate content brief
-    content_brief = generate_content_brief(keyword, location, search_results, analysis)
+    content_brief = generate_content_brief(keyword, location, search_results, serp_analysis)
     
     # Print the content brief
     print(content_brief)
