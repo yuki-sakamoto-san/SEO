@@ -1,0 +1,64 @@
+import requests
+import pandas as pd
+import time
+import logging
+
+# Set up logging for debugging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Your Google API key (Replace with your actual API key)
+API_KEY = "YOUR_GOOGLE_API_KEY"
+
+# List of URLs to check (Replace these with your actual URLs)
+urls = [
+    "https://example.com/page1",
+    "https://example.com/page2",
+    "https://example.com/page3"
+]
+
+# Google Rich Results API Endpoint
+API_ENDPOINT = f"https://searchconsole.googleapis.com/v1/urlTestingTools/mobileFriendlyTest:run?key={API_KEY}"
+
+# Function to check structured data
+def check_rich_results(url):
+    """Sends a request to Google Rich Results API and returns schema validation results."""
+    payload = {"url": url}
+    
+    try:
+        response = requests.post(API_ENDPOINT, json=payload)
+        
+        # Check if request was successful
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "URL": url,
+                "Schema_Status": data.get("mobileFriendliness", "Unknown"),
+                "Issues": str(data.get("resourceIssues", [])),  # Convert list to string
+                "Other_Details": str(data.get("mobileFriendlyIssues", []))  # Convert list to string
+            }
+        else:
+            return {"URL": url, "Error": f"HTTP {response.status_code}: {response.text}"}
+
+    except Exception as e:
+        logging.error(f"Error processing {url}: {str(e)}")
+        return {"URL": url, "Error": str(e)}
+
+# Run API requests for all URLs
+results = []
+for i, url in enumerate(urls):
+    logging.info(f"Checking {i+1}/{len(urls)}: {url}")
+    results.append(check_rich_results(url))
+    time.sleep(2)  # Pause to avoid rate limits
+
+# Convert results to DataFrame
+df = pd.DataFrame(results)
+
+# Save results to CSV
+csv_filename = "rich_results_check.csv"
+df.to_csv(csv_filename, index=False)
+
+# Display confirmation message
+print(f"✅ Schema validation completed! Results saved to: {csv_filename}")
+
+# Show results in terminal
+print(df)
