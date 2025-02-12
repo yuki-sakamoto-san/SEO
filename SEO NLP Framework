@@ -1,0 +1,159 @@
+import requests
+import spacy
+import pandas as pd
+from bs4 import BeautifulSoup
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import LatentDirichletAllocation
+from nltk.sentiment import SentimentIntensityAnalyzer
+from urllib.parse import urlparse
+import logging
+import nltk
+from transformers import pipeline
+
+# Ensure necessary NLTK resources are available
+try:
+    nltk.data.find('sentiment/vader_lexicon.zip')
+except LookupError:
+    nltk.download('vader_lexicon')
+
+# Attempt to import textstat, install if missing
+try:
+    import textstat
+except ModuleNotFoundError:
+    import subprocess
+    subprocess.run(["pip", "install", "textstat"])
+    import textstat
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Load spaCy NLP model
+try:
+    nlp = spacy.load("en_core_web_sm")
+except OSError:
+    import subprocess
+    subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"])
+    nlp = spacy.load("en_core_web_sm")
+
+sia = SentimentIntensityAnalyzer()
+summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+
+def scrape_page(url):
+    """Extracts raw text from a webpage."""
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to retrieve content from {url}: {e}")
+        return ""
+    
+    soup = BeautifulSoup(response.text, "html.parser")
+    text = '\n'.join([p.get_text() for p in soup.find_all('p')])
+    return text.strip()
+
+def generate_meta_description(text):
+    """Generates an AI-powered meta description using the entire page content."""
+    if len(text.split()) > 1024:
+        text = ' '.join(text.split()[:1024])  # Truncate long content to fit model limit
+    try:
+        result = summarizer(text, max_length=50, min_length=20, do_sample=False)
+        return result[0]['summary_text']
+    except Exception as e:
+        logging.error(f"Meta description generation failed: {e}")
+        return "Meta description not available."
+
+def keyword_analysis(text):
+    """Extracts important keywords using TF-IDF."""
+    vectorizer = TfidfVectorizer(stop_words='english', max_features=10)
+    X = vectorizer.fit_transform([text])
+    return vectorizer.get_feature_names_out().tolist()
+
+def search_intent_classification(text):
+    """Classifies search intent based on keywords."""
+    informational_keywords = ['guide', 'how to', 'best way', 'learn', 'tutorial']
+    transactional_keywords = ['buy', 'discount', 'deal', 'cheap', 'order']
+    navigational_keywords = ['login', 'contact', 'homepage', 'official site']
+    
+    text_lower = text.lower()
+    
+    if any(word in text_lower for word in informational_keywords):
+        return 'Informational'
+    elif any(word in text_lower for word in transactional_keywords):
+        return 'Transactional'
+    elif any(word in text_lower for word in navigational_keywords):
+        return 'Navigational'
+    else:
+        return 'Unclassified'
+
+def topic_modeling(text):
+    """Performs topic modeling using LDA."""
+    vectorizer = TfidfVectorizer(stop_words='english')
+    X = vectorizer.fit_transform([text])
+    lda = LatentDirichletAllocation(n_components=2, random_state=42)
+    lda.fit(X)
+    return lda.components_.tolist()
+
+def readability_analysis(text):
+    """Calculates readability score using Flesch-Kincaid index."""
+    return textstat.flesch_kincaid_grade(text)
+
+def sentiment_analysis(text):
+    """Analyzes sentiment of content."""
+    return sia.polarity_scores(text)
+
+def readability_category(score):
+    """Determines readability level."""
+    if score < 5:
+        return "Very Easy (Grade School Level)"
+    elif 5 <= score < 8:
+        return "Easy (Middle School Level)"
+    elif 8 <= score < 12:
+        return "Moderate (High School Level)"
+    elif 12 <= score < 16:
+        return "Difficult (College Level)"
+    else:
+        return "Very Difficult (Postgraduate Level)"
+
+def seo_nlp_framework(url):
+    """Runs all NLP-based SEO analyses on a given webpage."""
+    logging.info(f"Analyzing: {url}")
+    
+    text = scrape_page(url)
+    if not text:
+        return {"Error": "Failed to retrieve content from the URL."}
+    
+    meta_description = generate_meta_description(text)
+    keywords = keyword_analysis(text)
+    intent = search_intent_classification(text)
+    topics = topic_modeling(text)
+    readability_score = readability_analysis(text)
+    readability_label = readability_category(readability_score)
+    sentiment = sentiment_analysis(text)
+    
+    result = {
+        "URL": url,
+        "Content Preview": text[:500] + "...",  # Display first 500 characters with ellipsis
+        "Keywords": ', '.join(keywords),
+        "Search Intent": intent,
+        "AI-Generated Meta Description": meta_description,
+        "Readability Score": readability_score,
+        "Readability Category": readability_label,
+        "Sentiment Score": sentiment
+    }
+    return result
+
+# Example Usage
+if __name__ == "__main__":
+    test_url = "ADD URL IN HERE"
+    seo_report = seo_nlp_framework(test_url)
+    df = pd.DataFrame([seo_report])
+    
+    # Ensure better display of DataFrame content
+    pd.set_option('display.max_colwidth', None)
+    pd.set_option('display.width', 80)
+    pd.set_option('display.expand_frame_repr', False)
+    
+    # Display results in a structured format
+    print("\nSEO Analysis Report")
+    print(df)
