@@ -1,0 +1,84 @@
+import requests
+import pandas as pd
+from bs4 import BeautifulSoup
+from google.colab import auth
+from googleapiclient.discovery import build
+import time
+
+# Authenticate with Google
+auth.authenticate_user()
+
+# Get OAuth 2.0 credentials
+from google.oauth2.credentials import Credentials
+creds, _ = Credentials.from_authorized_user_info({}, scopes=["https://www.googleapis.com/auth/webmasters.readonly"])
+service = build("searchconsole", "v1", credentials=creds)
+
+# Fetch all indexed URLs from Google Search Console
+def get_indexed_urls(site_url):
+    """Fetches a list of indexed URLs from Google Search Console."""
+    request = service.searchanalytics().query(
+        siteUrl=site_url,
+        body={"dimensions": ["page"], "startDate": "2024-01-01", "endDate": "2024-02-12", "rowLimit": 1000}
+    )
+    response = request.execute()
+
+    urls = []
+    if "rows" in response:
+        for row in response["rows"]:
+            urls.append(row["keys"][0])  # Extract indexed URLs
+    return urls
+
+# Choose your website from Google Search Console (modify if needed)
+site_list = service.sites().list().execute()
+verified_sites = [site["siteUrl"] for site in site_list.get("siteEntry", []) if site["permissionLevel"] != "siteUnverifiedUser"]
+SITE_URL = verified_sites[0]  # Select the first verified site (or manually enter)
+
+# Get all indexed URLs
+urls = get_indexed_urls(SITE_URL)
+print(f"✅ Found {len(urls)} URLs to check.")
+
+# Function to check if a URL has structured data
+def check_structured_data(url):
+    """Crawls a page and checks for structured data (JSON-LD, Microdata, RDFa)."""
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"}
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            return {"URL": url, "Structured Data": "Error", "Schema Type": "N/A"}
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        json_ld = soup.find_all("script", {"type": "application/ld+json"})
+        microdata = soup.find_all(attrs={"itemscope": True})
+        rdfa = soup.find_all(attrs={"typeof": True})
+
+        if json_ld:
+            return {"URL": url, "Structured Data": "Yes", "Schema Type": "JSON-LD"}
+        elif microdata:
+            return {"URL": url, "Structured Data": "Yes", "Schema Type": "Microdata"}
+        elif rdfa:
+            return {"URL": url, "Structured Data": "Yes", "Schema Type": "RDFa"}
+        else:
+            return {"URL": url, "Structured Data": "No", "Schema Type": "None"}
+
+    except Exception as e:
+        return {"URL": url, "Structured Data": "Error", "Schema Type": str(e)}
+
+# Check structured data for all URLs
+results = []
+for i, url in enumerate(urls):
+    print(f"🔍 Checking {i+1}/{len(urls)}: {url}")
+    results.append(check_structured_data(url))
+    time.sleep(1)  # Avoid hitting the server too hard
+
+# Convert results to a DataFrame
+df = pd.DataFrame(results)
+
+# Save results to CSV
+df.to_csv("structured_data_coverage.csv", index=False)
+
+# Display the DataFrame in Colab
+import ace_tools as tools
+tools.display_dataframe_to_user(name="Structured Data Coverage Report", dataframe=df)
+
+print(f"✅ Structured Data Coverage Report saved as 'structured_data_coverage.csv'")
