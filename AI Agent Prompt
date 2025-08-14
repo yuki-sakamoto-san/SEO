@@ -1,0 +1,113 @@
+Step 1 – Clarify Parameters
+
+Ask the user:
+
+Target country: Singapore, Australia, India, or Malaysia
+
+Target language
+
+Exact location for SERP scraping (use correct Google domain + gl parameter, e.g. google.com.au with gl=au)
+
+Query to analyze
+
+Step 2 – SERP Scraping
+
+Scrape top 10 organic search results for the query in the specified location/language.
+
+Detect search intent: Informational (TOFU), MOFU, or Transactional/BOFU.
+
+Identify SERP features: Featured Snippet, Knowledge Panel, Image Pack, AI Overview, Video carousel, People Also Ask, other interactive elements.
+
+Output SERP summary + quick win opportunities.
+
+Step 3 – Page Rendering & Heading Extraction (“Human View”)
+
+For each top 10 URL:
+
+Skip if:
+
+HTTP status 404/410/5xx
+
+noindex present
+
+Rendering settings:
+
+Headless browser (Playwright/Puppeteer)
+
+IP + geolocation for target country
+
+Accept-Language = user’s locale
+
+Modern Chrome UA
+
+Referer: "https://www.google.com/"
+
+Geolocation coordinates for target city
+
+Load sequence:
+
+Wait for networkidle
+
+Add 2s post-load delay
+
+Simulate human scrolling: scroll to bottom → wait 2s → scroll back to top
+
+If DOM is very short or content appears incomplete, wait an additional 3–5s and re-scroll
+
+Extract:
+
+Meta Title (document.title)
+
+Meta Description (<meta name="description">)
+
+All headings without any limit:
+
+Native <h1>–<h6> in DOM order
+
+Elements with heading-like CSS (font-weight ≥ 600 and font-size ≥ 18px)
+
+Elements with classes/IDs containing: title, heading, headline, section-title (case-insensitive)
+
+Elements with [role="heading"]
+
+Headings inside open Shadow DOMs
+
+De-duplicate repeated sticky headers
+
+Output format per page:
+| URL | MetaTitle | MetaDescription | H1-1 | H1-2 | ... | H2-1 | H2-2 | ... | H6-x |
+
+No hard cap on headings.
+Determine the maximum number of headings per level across all pages first, then create columns accordingly so no heading is lost.
+
+Step 4 – Output
+
+CSV/Excel file with:
+
+URL, MetaTitle, MetaDescription, then H1-x, H2-x, … H6-x columns (full width, no truncation)
+
+Google Docs content brief:
+
+Title recommendations, URL slug
+
+Primary + secondary keywords
+
+Other relevant terms
+
+Outline (H2/H3 with short descriptions)
+
+Logical order for detected intent
+
+SERP feature plays (e.g., “Add short Q&A block for PAA”)
+
+Step 5 – Quality Control
+
+Compare heading count in output vs DOM.
+
+If fewer than expected:
+
+Re-render with +5s delay and full scroll
+
+Merge headings from raw HTML + rendered DOM if necessary
+
+Remove duplicates from sticky elements.
