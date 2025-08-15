@@ -24,8 +24,7 @@ It scrapes the top 10 results for a specified location and query, running the jo
 
 **Note** Make sure to obtain your Google API Key and [Custom Search Engine](https://console.cloud.google.com/apis/) ID first! You can get your API Key at Google Cloud Console and your [Custom Search Engine ID](https://developers.google.com/custom-search/v1/introduction) at Google Custom Search.
 
-
-
-
+### AI Promot 
+Use it for Gemini AI Agent if your company has it installed then feed my JS file (single location scraper v2)
 
 
