@@ -1,28 +1,28 @@
-// File: headings_scraper_single_location_v2.js
-// Single-location SERP (no aggregation) + robust AI Overview detection.
+// File: headings_scraper_single_location_v3.js
+// Single-location SERP + FULL headings with safeguards against "only H2-3".
+// - Unlimited H1–H6 (native + ARIA), optional includeHidden (no bounding box check)
+// - Heading-like fallback (bold/big/semantic) ENABLED by default to catch styled pseudo-headings
+// - Robust AI Overview detection (main + google_ai_overview probe + HTML verify)
+// - Extra waits/scroll depth configurable
+// - Writes Headings + SERP_Summary to Google Sheets (or CSV/JSON), and headings_debug.json for counts.
 //
-// Changelog vs v1:
-//  - Detects AIO via multiple fields (ai_overview, ai_overview_results, search_information.ai_overview_is_available)
-//  - Adds --aioProbeAlways=true to ALWAYS call google_ai_overview engine for confirmation
-//  - Adds --aioProbeHlFallback=en to force hl=en ONLY for the AIO probe if your main hl isn't 'en'
-//  - Improves Playwright HTML verification (more strings + longer watch + gentle scroll)
-//
-// Install:  npm i playwright googleapis axios csv-writer
+// Install: npm i playwright googleapis axios csv-writer
 //
 // Example:
-// node headings_scraper_single_location_v2.js \
+// node headings_scraper_single_location_v3.js \
 //   --query="Chargeback" \
 //   --location="Australia" \
 //   --google_domain="google.com.au" \
 //   --gl="au" \
 //   --hl="en" \
 //   --apiKey="YOUR_SERPAPI_KEY" \
-//   --sheetId="YOUR_SHEET_ID" \
-//   --sheetName="Headings" \
-//   --serviceAccountKey="./service_account.json" \
+//   --sheetId="YOUR_SHEET_ID" --sheetName="Headings" --serviceAccountKey="./service_account.json" \
 //   --verifySerpWithPlaywright=true \
 //   --aioProbeAlways=true \
-//   --aioProbeHlFallback=en
+//   --aioProbeHlFallback=en \
+//   --includeHidden=true \
+//   --extraWaitMs=2500 \
+//   --scrollSteps=18 --scrollStepPx=1000
 //
 const fs = require('fs');
 const axios = require('axios');
@@ -30,7 +30,7 @@ const { chromium } = require('playwright');
 const { google } = require('googleapis');
 const { createObjectCsvWriter } = require('csv-writer');
 
-/** ====================== CLI ====================== **/
+/** ============== CLI ============== **/
 function parseArgs() {
   const args = process.argv.slice(2);
   const out = {};
@@ -39,11 +39,11 @@ function parseArgs() {
     if (m) out[m[1]] = m[2];
   }
   if (!out.query) throw new Error('Missing --query');
-  if (!out.location) throw new Error('Missing --location (e.g., "Australia" or "Sydney, New South Wales, Australia")');
+  if (!out.location) throw new Error('Missing --location');
   out.google_domain = out.google_domain || 'google.com.au';
   out.gl = out.gl || 'au';
   out.hl = out.hl || 'en';
-  if (!out.apiKey) throw new Error('Missing --apiKey (SerpAPI key)');
+  if (!out.apiKey) throw new Error('Missing --apiKey');
   out.sheetId = out.sheetId || process.env.SHEET_ID;
   out.sheetName = out.sheetName || process.env.SHEET_NAME || 'Headings';
   out.serviceAccountKey = out.serviceAccountKey || process.env.SERVICE_ACCOUNT_KEY;
@@ -51,16 +51,20 @@ function parseArgs() {
   out.verifySerpWithPlaywright = String(out.verifySerpWithPlaywright || 'false').toLowerCase() === 'true';
   out.aioProbeAlways = String(out.aioProbeAlways || 'false').toLowerCase() === 'true';
   out.aioProbeHlFallback = out.aioProbeHlFallback || 'en';
+  out.includeHidden = String(out.includeHidden || 'true').toLowerCase() === 'true'; // default true for safety
+  out.headingLike = String(out.headingLike || 'true').toLowerCase() === 'true'; // default true
+  out.extraWaitMs = parseInt(out.extraWaitMs || '1500', 10);
+  out.scrollSteps = parseInt(out.scrollSteps || '14', 10);
+  out.scrollStepPx = parseInt(out.scrollStepPx || '900', 10);
   return out;
 }
 
-/** ====================== Helpers ====================== **/
+/** ============== Helpers ============== **/
 function hasAioInSerpapiData(d) {
   if (!d || typeof d !== 'object') return false;
   if (d.ai_overview && Object.keys(d.ai_overview).length) return true;
   if (d.ai_overview_results && Object.keys(d.ai_overview_results).length) return true;
   if (d.search_information && (d.search_information.ai_overview || d.search_information.ai_overview_is_available)) return true;
-  // Some experiments place AIO-like data in knowledge_graph extras. Be conservative:
   if (d.knowledge_graph && d.knowledge_graph.ai_overview) return true;
   return false;
 }
@@ -69,7 +73,7 @@ function buildUule(loc) {
   return `w+CAIQICI${b64}`;
 }
 
-/** ====================== SerpAPI ====================== **/
+/** ============== SerpAPI single-location ============== **/
 async function serpapiSingle({ query, location, google_domain, gl, hl, apiKey, aioProbeAlways, aioProbeHlFallback }) {
   const primaryParams = {
     engine: 'google',
@@ -84,8 +88,7 @@ async function serpapiSingle({ query, location, google_domain, gl, hl, apiKey, a
     api_key: apiKey
   };
   const { data } = await axios.get('https://serpapi.com/search.json', { params: primaryParams, timeout: 60000 });
-  const urls = (data.organic_results || []).map(r => r.link).filter(Boolean); // preserve order
-  // Features
+  const urls = (data.organic_results || []).map(r => r.link).filter(Boolean);
   const features = {
     FeaturedSnippet: !!(data.answer_box || data.featured_snippet),
     KnowledgePanel: !!data.knowledge_graph,
@@ -94,8 +97,6 @@ async function serpapiSingle({ query, location, google_domain, gl, hl, apiKey, a
     Video: !!(data.inline_videos || data.video_results),
     AIOverview: hasAioInSerpapiData(data)
   };
-
-  // Proactive AIO probe when needed
   if (!features.AIOverview && (aioProbeAlways || hl.toLowerCase() !== 'en')) {
     const probeParams = {
       engine: 'google_ai_overview',
@@ -114,8 +115,8 @@ async function serpapiSingle({ query, location, google_domain, gl, hl, apiKey, a
   return { urls, features, raw: data };
 }
 
-/** ====================== Verify on Google HTML (optional) ====================== **/
-async function verifySerpOnGoogleHtml({ query, location, google_domain, gl, hl }) {
+/** ============== HTML verify (optional) ============== **/
+async function verifySerpOnGoogleHtml({ query, location, google_domain, gl, hl, extraWaitMs }) {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     locale: hl,
@@ -131,14 +132,13 @@ async function verifySerpOnGoogleHtml({ query, location, google_domain, gl, hl }
     if (await consent.isVisible({ timeout: 2000 })) await consent.click();
   } catch {}
 
-  // GAI network signal + incremental scroll to trigger lazy AIO
   let genAiNetworkSeen = false;
   page.on('request', req => {
     const u = req.url();
-    if ( /genai|searchgenai|unified_qa|\/_\/SearchGenAI|_batchexecute/i.test(u) && /google\./i.test(u) ) genAiNetworkSeen = true;
+    if (/genai|searchgenai|unified_qa|\/_\/SearchGenAI|_batchexecute/i.test(u) && /google\./i.test(u)) genAiNetworkSeen = true;
   });
+
   await page.evaluate(async () => {
-    // gentle scroll up/down to surface dynamic blocks
     await new Promise(res => {
       let y = 0, dir = 1, steps = 0;
       const step = () => {
@@ -146,13 +146,13 @@ async function verifySerpOnGoogleHtml({ query, location, google_domain, gl, hl }
         y += 700 * dir;
         steps++;
         if (y > 2800) dir = -1;
-        if (steps < 10) setTimeout(step, 180);
+        if (steps < 12) setTimeout(step, 180);
         else res();
       };
       step();
     });
   });
-  await page.waitForTimeout(1500);
+  if (extraWaitMs) await page.waitForTimeout(parseInt(extraWaitMs,10));
 
   const AIO_STRINGS = [
     /ai overview/i,
@@ -200,16 +200,16 @@ async function verifySerpOnGoogleHtml({ query, location, google_domain, gl, hl }
   return { url, features: out };
 }
 
-/** ====================== Headings extraction ====================== **/
-async function extractMeta(page) {
-  return await page.evaluate(() => {
-    const metaDesc = document.querySelector('meta[name="description"]');
-    return { title: document.title || '', description: metaDesc?.getAttribute('content') || '' };
-  });
-}
-async function extractHeadingsNativeAndAria(page) {
-  return await page.evaluate(() => {
+/** ============== Headings extraction ============== **/
+async function extractHeadings(page, { includeHidden = true, headingLike = true }) {
+  return await page.evaluate(({ includeHidden, headingLike }) => {
     function normalize(t){ return (t || '').replace(/\s+/g,' ').trim(); }
+    function visible(el) {
+      if (includeHidden) return true;
+      const cs = getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && cs.display !== 'none' && cs.visibility !== 'hidden';
+    }
     function* deepRoots(root = document) {
       yield root;
       const walker = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT);
@@ -219,22 +219,59 @@ async function extractHeadingsNativeAndAria(page) {
       }
     }
     const out = { h1:[], h2:[], h3:[], h4:[], h5:[], h6:[] };
+    const seen = new Set();
     const push = (key, el) => {
-      const rect = el.getBoundingClientRect?.() || { width:1, height:1 };
-      if (rect.width === 0 || rect.height === 0) return;
+      if (!visible(el)) return;
       const text = normalize(el.innerText || el.textContent);
-      if (text) out[key].push(text);
+      if (!text) return;
+      const sig = key + '|' + text;
+      if (seen.has(sig)) return;
+      seen.add(sig);
+      out[key].push(text);
     };
-    for (const root of deepRoots()) ['h1','h2','h3','h4','h5','h6'].forEach(tag => root.querySelectorAll(tag).forEach(el => push(tag, el)));
-    for (const root of deepRoots()) root.querySelectorAll('[role="heading"]').forEach(el => {
-      let lv = parseInt(el.getAttribute('aria-level'),10);
-      if (!Number.isFinite(lv) || lv < 1 || lv > 6) lv = 2;
-      push(`h${lv}`, el);
-    });
+
+    // Native H1..H6
+    for (const root of deepRoots()) {
+      ['h1','h2','h3','h4','h5','h6'].forEach(tag => root.querySelectorAll(tag).forEach(el => push(tag, el)));
+    }
+    // role="heading"
+    for (const root of deepRoots()) {
+      root.querySelectorAll('[role="heading"]').forEach(el => {
+        let lv = parseInt(el.getAttribute('aria-level'),10);
+        if (!Number.isFinite(lv) || lv < 1 || lv > 6) lv = 2;
+        push(`h${lv}`, el);
+      });
+    }
+    // Heading-like fallback (size/weight/semantic)
+    if (headingLike) {
+      for (const root of deepRoots()) {
+        const walker = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT);
+        let node;
+        while ((node = walker.nextNode())) {
+          const el = node;
+          if (['H1','H2','H3','H4','H5','H6'].includes(el.tagName)) continue;
+          const cs = getComputedStyle(el);
+          const fwRaw = cs.getPropertyValue('font-weight');
+          const fw = parseInt(fwRaw,10);
+          const heavy = Number.isFinite(fw) ? fw >= 600 : /bold|bolder/i.test(fwRaw);
+          const size = parseFloat(cs.getPropertyValue('font-size')) || 0;
+          const idc = (el.id + ' ' + el.className).toLowerCase();
+          const semantic = /title|heading|headline|section-title/.test(idc);
+          if (!(heavy && size >= 18) && !semantic) continue;
+          let lv = 5;
+          if (size >= 30) lv = 1;
+          else if (size >= 24) lv = 2;
+          else if (size >= 20) lv = 3;
+          else if (size >= 18) lv = 4;
+          push(`h${lv}`, el);
+        }
+      }
+    }
     return out;
-  });
+  }, { includeHidden, headingLike });
 }
-async function renderAndExtract(url, hl) {
+
+async function renderAndExtract(url, hl, { extraWaitMs, scrollSteps, scrollStepPx, includeHidden, headingLike }) {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     locale: hl,
@@ -255,28 +292,33 @@ async function renderAndExtract(url, hl) {
   const robots = await page.locator('meta[content*="noindex"]').first();
   if (await robots.count()) { await context.close(); await browser.close(); return null; }
   await page.waitForLoadState('networkidle', { timeout: 20000 });
-  await page.evaluate(async () => {
+  await page.evaluate(async ({ scrollSteps, scrollStepPx }) => {
     await new Promise(res => {
-      let scrolled = 0;
+      let steps = 0;
       const step = () => {
-        window.scrollBy(0, 900);
-        scrolled += 900;
-        if (scrolled < document.body.scrollHeight + 2000) setTimeout(step, 100);
+        window.scrollBy(0, scrollStepPx);
+        steps++;
+        if (steps < scrollSteps) setTimeout(step, 110);
         else res();
       };
       step();
     });
-  });
-  await page.waitForTimeout(1000);
+  }, { scrollSteps, scrollStepPx });
+  if (extraWaitMs) await page.waitForTimeout(extraWaitMs);
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
-  const meta = await extractMeta(page);
-  const headings = await extractHeadingsNativeAndAria(page);
+
+  const meta = await page.evaluate(() => {
+    const metaDesc = document.querySelector('meta[name="description"]');
+    return { title: document.title || '', description: metaDesc?.getAttribute('content') || '' };
+  });
+  const headings = await extractHeadings(page, { includeHidden, headingLike });
+
   await context.close();
   await browser.close();
   return { url, meta, headings };
 }
 
-/** ====================== Output builders ====================== **/
+/** ============== Output builders ============== **/
 function buildHeaderAndRows(pages) {
   const maxCols = { h1:0, h2:0, h3:0, h4:0, h5:0, h6:0 };
   for (const p of pages) for (const lv of ['h1','h2','h3','h4','h5','h6']) maxCols[lv] = Math.max(maxCols[lv], p.headings[lv]?.length || 0);
@@ -290,10 +332,10 @@ function buildHeaderAndRows(pages) {
     }
     return row;
   });
-  return { header, rows };
+  return { header, rows, maxCols };
 }
 
-/** ====================== Google Sheets ====================== **/
+/** ============== Sheets / CSV ============== **/
 async function uploadToGoogleSheet({ rows, header, sheetId, sheetName, serviceAccountKey }) {
   const auth = new google.auth.GoogleAuth({ keyFile: serviceAccountKey, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
   const sheets = google.sheets({ version: 'v4', auth });
@@ -330,15 +372,13 @@ async function uploadSerpSummaryToSheet({ summary, sheetId, serviceAccountKey })
   });
   console.log(`✅ SERP summary uploaded to tab: ${tab}`);
 }
-
-/** ====================== CSV fallback ====================== **/
 async function writeCsv(path, header, rows) {
   const csvWriter = createObjectCsvWriter({ path, header });
   await csvWriter.writeRecords(rows);
   console.log(`💾 Wrote ${path}`);
 }
 
-/** ====================== Main ====================== **/
+/** ============== Main ============== **/
 (async () => {
   const argv = parseArgs();
 
@@ -357,11 +397,32 @@ async function writeCsv(path, header, rows) {
   // 2) Render + extract headings (preserve order)
   const top = urls.slice(0, argv.maxUnique);
   const pages = [];
+  const debug = [];
   for (const url of top) {
-    const res = await renderAndExtract(url, argv.hl);
-    if (res) pages.push(res);
+    const res = await renderAndExtract(url, argv.hl, {
+      extraWaitMs: argv.extraWaitMs,
+      scrollSteps: argv.scrollSteps,
+      scrollStepPx: argv.scrollStepPx,
+      includeHidden: argv.includeHidden,
+      headingLike: argv.headingLike
+    });
+    if (res) {
+      pages.push(res);
+      debug.push({
+        url: res.url,
+        counts: {
+          h1: res.headings.h1.length,
+          h2: res.headings.h2.length,
+          h3: res.headings.h3.length,
+          h4: res.headings.h4.length,
+          h5: res.headings.h5.length,
+          h6: res.headings.h6.length
+        }
+      });
+    }
   }
-  const { header, rows } = buildHeaderAndRows(pages);
+
+  const { header, rows, maxCols } = buildHeaderAndRows(pages);
 
   // 3) Optional verify on HTML
   let verify = null;
@@ -371,7 +432,8 @@ async function writeCsv(path, header, rows) {
       location: argv.location,
       google_domain: argv.google_domain,
       gl: argv.gl,
-      hl: argv.hl
+      hl: argv.hl,
+      extraWaitMs: argv.extraWaitMs
     });
   }
 
@@ -387,8 +449,12 @@ async function writeCsv(path, header, rows) {
     raw_sample: raw?.search_metadata ? {
       google_url: raw.search_metadata.google_url,
       created_at: raw.search_metadata.created_at
-    } : null
+    } : null,
+    heading_max_cols: maxCols
   };
+
+  // Write debug
+  fs.writeFileSync('headings_debug.json', JSON.stringify({ pages: debug, maxCols }, null, 2));
 
   if (argv.sheetId && argv.serviceAccountKey) {
     await uploadToGoogleSheet({ rows, header, sheetId: argv.sheetId, sheetName: argv.sheetName, serviceAccountKey: argv.serviceAccountKey });
