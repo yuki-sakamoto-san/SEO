@@ -1,15 +1,18 @@
-// File: headings_scraper_single_location_v3.js
-// Single-location SERP + FULL headings with safeguards against "only H2-3".
-// - Unlimited H1–H6 (native + ARIA), optional includeHidden (no bounding box check)
-// - Heading-like fallback (bold/big/semantic) ENABLED by default to catch styled pseudo-headings
-// - Robust AI Overview detection (main + google_ai_overview probe + HTML verify)
-// - Extra waits/scroll depth configurable
-// - Writes Headings + SERP_Summary to Google Sheets (or CSV/JSON), and headings_debug.json for counts.
+// File: headings_scraper_single_location_v4.js
+// Single-location SERP + FULL headings with iframe traversal + robust AIO detection.
+//
+// Key fixes vs v3:
+//  - Noindex: do NOT skip pages unless --respectNoindex=true
+//  - Iframes: traverse same-origin frames and merge heading results
+//  - Headers: set Accept-Language for all requests
+//  - Re-render retry: if very few headings found, do an extra wait + scroll pass
+//  - Strong AIO: same as v3 with proactive google_ai_overview probe
+//  - Rich debug: writes per-frame counts and retry info
 //
 // Install: npm i playwright googleapis axios csv-writer
 //
 // Example:
-// node headings_scraper_single_location_v3.js \
+// node headings_scraper_single_location_v4.js \
 //   --query="Chargeback" \
 //   --location="Australia" \
 //   --google_domain="google.com.au" \
@@ -21,6 +24,8 @@
 //   --aioProbeAlways=true \
 //   --aioProbeHlFallback=en \
 //   --includeHidden=true \
+//   --headingLike=true \
+//   --respectNoindex=false \
 //   --extraWaitMs=2500 \
 //   --scrollSteps=18 --scrollStepPx=1000
 //
@@ -51,11 +56,13 @@ function parseArgs() {
   out.verifySerpWithPlaywright = String(out.verifySerpWithPlaywright || 'false').toLowerCase() === 'true';
   out.aioProbeAlways = String(out.aioProbeAlways || 'false').toLowerCase() === 'true';
   out.aioProbeHlFallback = out.aioProbeHlFallback || 'en';
-  out.includeHidden = String(out.includeHidden || 'true').toLowerCase() === 'true'; // default true for safety
-  out.headingLike = String(out.headingLike || 'true').toLowerCase() === 'true'; // default true
+  out.includeHidden = String(out.includeHidden || 'true').toLowerCase() === 'true';
+  out.headingLike = String(out.headingLike || 'true').toLowerCase() === 'true';
+  out.respectNoindex = String(out.respectNoindex || 'false').toLowerCase() === 'true';
   out.extraWaitMs = parseInt(out.extraWaitMs || '1500', 10);
   out.scrollSteps = parseInt(out.scrollSteps || '14', 10);
   out.scrollStepPx = parseInt(out.scrollStepPx || '900', 10);
+  out.retryIfFewHeadings = parseInt(out.retryIfFewHeadings || '2', 10); // if total H1–H6 < 2, retry once
   return out;
 }
 
@@ -71,6 +78,13 @@ function hasAioInSerpapiData(d) {
 function buildUule(loc) {
   const b64 = Buffer.from(loc, 'utf8').toString('base64');
   return `w+CAIQICI${b64}`;
+}
+function mergeHeadings(a, b) {
+  const out = { h1:[], h2:[], h3:[], h4:[], h5:[], h6:[] };
+  for (const k of Object.keys(out)) {
+    out[k] = [...(a[k]||[]), ...(b[k]||[])];
+  }
+  return out;
 }
 
 /** ============== SerpAPI single-location ============== **/
@@ -120,6 +134,7 @@ async function verifySerpOnGoogleHtml({ query, location, google_domain, gl, hl, 
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     locale: hl,
+    extraHTTPHeaders: { 'Accept-Language': hl },
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
   });
   const page = await context.newPage();
@@ -200,9 +215,9 @@ async function verifySerpOnGoogleHtml({ query, location, google_domain, gl, hl, 
   return { url, features: out };
 }
 
-/** ============== Headings extraction ============== **/
-async function extractHeadings(page, { includeHidden = true, headingLike = true }) {
-  return await page.evaluate(({ includeHidden, headingLike }) => {
+/** ============== Headings extraction with iframe traversal ============== **/
+async function extractHeadingsInFrame(frame, opts) {
+  return await frame.evaluate(({ includeHidden, headingLike }) => {
     function normalize(t){ return (t || '').replace(/\s+/g,' ').trim(); }
     function visible(el) {
       if (includeHidden) return true;
@@ -230,11 +245,9 @@ async function extractHeadings(page, { includeHidden = true, headingLike = true 
       out[key].push(text);
     };
 
-    // Native H1..H6
     for (const root of deepRoots()) {
       ['h1','h2','h3','h4','h5','h6'].forEach(tag => root.querySelectorAll(tag).forEach(el => push(tag, el)));
     }
-    // role="heading"
     for (const root of deepRoots()) {
       root.querySelectorAll('[role="heading"]').forEach(el => {
         let lv = parseInt(el.getAttribute('aria-level'),10);
@@ -242,7 +255,6 @@ async function extractHeadings(page, { includeHidden = true, headingLike = true 
         push(`h${lv}`, el);
       });
     }
-    // Heading-like fallback (size/weight/semantic)
     if (headingLike) {
       for (const root of deepRoots()) {
         const walker = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT);
@@ -268,29 +280,36 @@ async function extractHeadings(page, { includeHidden = true, headingLike = true 
       }
     }
     return out;
-  }, { includeHidden, headingLike });
+  }, opts);
 }
 
-async function renderAndExtract(url, hl, { extraWaitMs, scrollSteps, scrollStepPx, includeHidden, headingLike }) {
+async function renderAndExtract(url, hl, {
+  extraWaitMs, scrollSteps, scrollStepPx, includeHidden, headingLike, respectNoindex, retryIfFewHeadings
+}) {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     locale: hl,
+    extraHTTPHeaders: { 'Accept-Language': hl, Referer: 'https://www.google.com/' },
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
   });
   const page = await context.newPage();
   await page.route('**/*', route => {
-    const headers = { ...route.request().headers(), Referer: 'https://www.google.com/' };
+    const headers = { ...route.request().headers(), Referer: 'https://www.google.com/', 'Accept-Language': hl };
     route.continue({ headers });
   });
   let ok = false;
   try {
-    const resp = await page.goto(url, { waitUntil: 'load', timeout: 45000 });
+    const resp = await page.goto(url, { waitUntil: 'load', timeout: 60000 });
     const status = resp ? resp.status() : 0;
     if (status && status < 400) ok = true;
   } catch {}
   if (!ok) { await context.close(); await browser.close(); return null; }
-  const robots = await page.locator('meta[content*="noindex"]').first();
-  if (await robots.count()) { await context.close(); await browser.close(); return null; }
+
+  if (respectNoindex) {
+    const robots = await page.locator('meta[content*="noindex" i]').first();
+    if (await robots.count()) { await context.close(); await browser.close(); return null; }
+  }
+
   await page.waitForLoadState('networkidle', { timeout: 20000 });
   await page.evaluate(async ({ scrollSteps, scrollStepPx }) => {
     await new Promise(res => {
@@ -307,15 +326,54 @@ async function renderAndExtract(url, hl, { extraWaitMs, scrollSteps, scrollStepP
   if (extraWaitMs) await page.waitForTimeout(extraWaitMs);
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
 
+  // Extract from main frame + same-origin iframes
+  const frames = page.frames();
+  let merged = { h1:[], h2:[], h3:[], h4:[], h5:[], h6:[] };
+  const frameDebug = [];
+  for (const f of frames) {
+    try {
+      const sameOrigin = await f.evaluate(() => true); // will throw if cross-origin
+      if (!sameOrigin) continue;
+      const h = await extractHeadingsInFrame(f, { includeHidden, headingLike });
+      frameDebug.push({ url: f.url(), counts: { h1: h.h1.length, h2: h.h2.length, h3: h.h3.length, h4: h.h4.length, h5: h.h5.length, h6: h.h6.length } });
+      merged = mergeHeadings(merged, h);
+    } catch {
+      // cross-origin frame, skip
+    }
+  }
+
+  // If too few headings, one more gentle pass
+  const total = merged.h1.length + merged.h2.length + merged.h3.length + merged.h4.length + merged.h5.length + merged.h6.length;
+  if (total < retryIfFewHeadings) {
+    await page.evaluate(async ({ scrollSteps, scrollStepPx }) => {
+      await new Promise(res => {
+        let steps = 0;
+        const step = () => {
+          window.scrollBy(0, scrollStepPx);
+          steps++;
+          if (steps < scrollSteps) setTimeout(step, 140);
+          else res();
+        };
+        step();
+      });
+    }, { scrollSteps: Math.max(10, Math.floor(scrollSteps * 1.2)), scrollStepPx });
+    await page.waitForTimeout(extraWaitMs + 500);
+    // Re-extract main frame only to avoid duplicates from re-counting iframes
+    try {
+      const h2 = await extractHeadingsInFrame(page.mainFrame(), { includeHidden, headingLike });
+      frameDebug.push({ url: page.url(), counts_retry: { h1: h2.h1.length, h2: h2.h2.length, h3: h2.h3.length, h4: h2.h4.length, h5: h2.h5.length, h6: h2.h6.length } });
+      merged = mergeHeadings(merged, h2);
+    } catch {}
+  }
+
   const meta = await page.evaluate(() => {
     const metaDesc = document.querySelector('meta[name="description"]');
     return { title: document.title || '', description: metaDesc?.getAttribute('content') || '' };
   });
-  const headings = await extractHeadings(page, { includeHidden, headingLike });
 
   await context.close();
   await browser.close();
-  return { url, meta, headings };
+  return { url, meta, headings: merged, frameDebug };
 }
 
 /** ============== Output builders ============== **/
@@ -404,7 +462,9 @@ async function writeCsv(path, header, rows) {
       scrollSteps: argv.scrollSteps,
       scrollStepPx: argv.scrollStepPx,
       includeHidden: argv.includeHidden,
-      headingLike: argv.headingLike
+      headingLike: argv.headingLike,
+      respectNoindex: argv.respectNoindex,
+      retryIfFewHeadings: argv.retryIfFewHeadings
     });
     if (res) {
       pages.push(res);
@@ -417,7 +477,8 @@ async function writeCsv(path, header, rows) {
           h4: res.headings.h4.length,
           h5: res.headings.h5.length,
           h6: res.headings.h6.length
-        }
+        },
+        frames: res.frameDebug
       });
     }
   }
