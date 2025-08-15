@@ -1,33 +1,32 @@
-// File: headings_scraper_single_location_v4.js
-// Single-location SERP + FULL headings with iframe traversal + robust AIO detection.
+// File: headings_scraper_single_location_v5.js
+// Single-location SERP with **SerpAPI parity** + worldwide support + robust AIO + full headings.
 //
-// Key fixes vs v3:
-//  - Noindex: do NOT skip pages unless --respectNoindex=true
-//  - Iframes: traverse same-origin frames and merge heading results
-//  - Headers: set Accept-Language for all requests
-//  - Re-render retry: if very few headings found, do an extra wait + scroll pass
-//  - Strong AIO: same as v3 with proactive google_ai_overview probe
-//  - Rich debug: writes per-frame counts and retry info
+// Highlights:
+// - **Parity-first**: preserves SerpAPI top-N order and uses SerpAPI's **google_url** to verify features on HTML (no hand-rolled UULE)
+// - **Worldwide**: pass --country OR explicit google_domain/gl/hl/location (JP/FR/DE/etc.).
+// - **AIO**: reads multiple SerpAPI fields, **always probes google_ai_overview** (opt-in), and verifies on HTML with network + localized text hints.
+// - **Headings**: unlimited H1–H6 (native + ARIA), heading-like fallbacks, same-origin iframes, includeHidden, retries, extra waits/scroll.
+// - **Sheets**: writes Headings + SERP_Summary. CSV/JSON fallback.
 //
 // Install: npm i playwright googleapis axios csv-writer
 //
-// Example:
-// node headings_scraper_single_location_v4.js \
-//   --query="Chargeback" \
-//   --location="Australia" \
-//   --google_domain="google.com.au" \
-//   --gl="au" \
-//   --hl="en" \
+// Example (Australia):
+// node headings_scraper_single_location_v5.js \
+//   --query="3D secure" --country="Australia" --location="Australia" \
 //   --apiKey="YOUR_SERPAPI_KEY" \
 //   --sheetId="YOUR_SHEET_ID" --sheetName="Headings" --serviceAccountKey="./service_account.json" \
-//   --verifySerpWithPlaywright=true \
-//   --aioProbeAlways=true \
-//   --aioProbeHlFallback=en \
-//   --includeHidden=true \
-//   --headingLike=true \
-//   --respectNoindex=false \
-//   --extraWaitMs=2500 \
-//   --scrollSteps=18 --scrollStepPx=1000
+//   --verifySerpWithPlaywright=true --aioProbeAlways=true --aioProbeHlFallback=en \
+//   --includeHidden=true --headingLike=true --respectNoindex=false \
+//   --num=10 --safe=active
+//
+// Example (Japan):
+// node ... --country="Japan" --location="Japan" --hl="ja" --num=10 --safe=active
+//
+// Example (France):
+// node ... --country="France" --location="France" --hl="fr" --num=10
+//
+// Example (Germany):
+// node ... --country="Germany" --location="Germany" --hl="de" --num=10
 //
 const fs = require('fs');
 const axios = require('axios');
@@ -35,7 +34,33 @@ const { chromium } = require('playwright');
 const { google } = require('googleapis');
 const { createObjectCsvWriter } = require('csv-writer');
 
-/** ============== CLI ============== **/
+/** ====================== COUNTRY PRESETS ====================== **/
+const PRESETS = {
+  "Australia":   { google_domain: "google.com.au", gl: "au", hl: "en" },
+  "New Zealand": { google_domain: "google.co.nz", gl: "nz", hl: "en" },
+  "Singapore":   { google_domain: "google.com.sg", gl: "sg", hl: "en" },
+  "Malaysia":    { google_domain: "google.com.my", gl: "my", hl: "en" },
+  "India":       { google_domain: "google.co.in", gl: "in", hl: "en" },
+  "Japan":       { google_domain: "google.co.jp", gl: "jp", hl: "ja" },
+  "France":      { google_domain: "google.fr",    gl: "fr", hl: "fr" },
+  "Germany":     { google_domain: "google.de",    gl: "de", hl: "de" },
+  "United Kingdom": { google_domain: "google.co.uk", gl: "gb", hl: "en" },
+  "United States":  { google_domain: "google.com",   gl: "us", hl: "en" },
+  "Canada":         { google_domain: "google.ca",    gl: "ca", hl: "en" },
+  "Ireland":        { google_domain: "google.ie",    gl: "ie", hl: "en" },
+  "Spain":          { google_domain: "google.es",    gl: "es", hl: "es" },
+  "Italy":          { google_domain: "google.it",    gl: "it", hl: "it" },
+  "Netherlands":    { google_domain: "google.nl",    gl: "nl", hl: "nl" },
+  "Sweden":         { google_domain: "google.se",    gl: "se", hl: "sv" },
+  "Norway":         { google_domain: "google.no",    gl: "no", hl: "no" },
+  "Denmark":        { google_domain: "google.dk",    gl: "dk", hl: "da" },
+  "Finland":        { google_domain: "google.fi",    gl: "fi", hl: "fi" },
+  "Austria":        { google_domain: "google.at",    gl: "at", hl: "de" },
+  "Switzerland":    { google_domain: "google.ch",    gl: "ch", hl: "de" },
+  "Belgium":        { google_domain: "google.be",    gl: "be", hl: "fr" }
+};
+
+/** ====================== CLI ====================== **/
 function parseArgs() {
   const args = process.argv.slice(2);
   const out = {};
@@ -44,29 +69,40 @@ function parseArgs() {
     if (m) out[m[1]] = m[2];
   }
   if (!out.query) throw new Error('Missing --query');
-  if (!out.location) throw new Error('Missing --location');
-  out.google_domain = out.google_domain || 'google.com.au';
-  out.gl = out.gl || 'au';
+  // Optional: apply preset
+  if (out.country && PRESETS[out.country]) {
+    const p = PRESETS[out.country];
+    out.google_domain = out.google_domain || p.google_domain;
+    out.gl = out.gl || p.gl;
+    out.hl = out.hl || p.hl;
+  }
+  if (!out.location) throw new Error('Missing --location (e.g., "Australia", "Japan", or a city string)');
+  out.google_domain = out.google_domain || 'google.com';
+  out.gl = out.gl || 'us';
   out.hl = out.hl || 'en';
   if (!out.apiKey) throw new Error('Missing --apiKey');
+  out.num = Math.min(100, parseInt(out.num || '10', 10)); // allow up to 100
+  out.safe = out.safe || 'off'; // 'active' | 'off'
+  out.lr = out.lr || ''; // optional language restrict (e.g., lang_ja)
   out.sheetId = out.sheetId || process.env.SHEET_ID;
   out.sheetName = out.sheetName || process.env.SHEET_NAME || 'Headings';
   out.serviceAccountKey = out.serviceAccountKey || process.env.SERVICE_ACCOUNT_KEY;
-  out.maxUnique = parseInt(out.maxUnique || '10', 10);
+  out.maxUnique = parseInt(out.maxUnique || String(out.num), 10);
   out.verifySerpWithPlaywright = String(out.verifySerpWithPlaywright || 'false').toLowerCase() === 'true';
+  out.featuresSource = (out.featuresSource || 'both'); // 'serpapi' | 'html' | 'both'
   out.aioProbeAlways = String(out.aioProbeAlways || 'false').toLowerCase() === 'true';
   out.aioProbeHlFallback = out.aioProbeHlFallback || 'en';
   out.includeHidden = String(out.includeHidden || 'true').toLowerCase() === 'true';
   out.headingLike = String(out.headingLike || 'true').toLowerCase() === 'true';
   out.respectNoindex = String(out.respectNoindex || 'false').toLowerCase() === 'true';
-  out.extraWaitMs = parseInt(out.extraWaitMs || '1500', 10);
-  out.scrollSteps = parseInt(out.scrollSteps || '14', 10);
-  out.scrollStepPx = parseInt(out.scrollStepPx || '900', 10);
-  out.retryIfFewHeadings = parseInt(out.retryIfFewHeadings || '2', 10); // if total H1–H6 < 2, retry once
+  out.extraWaitMs = parseInt(out.extraWaitMs || '2000', 10);
+  out.scrollSteps = parseInt(out.scrollSteps || '16', 10);
+  out.scrollStepPx = parseInt(out.scrollStepPx || '950', 10);
+  out.retryIfFewHeadings = parseInt(out.retryIfFewHeadings || '2', 10);
   return out;
 }
 
-/** ============== Helpers ============== **/
+/** ====================== Helpers ====================== **/
 function hasAioInSerpapiData(d) {
   if (!d || typeof d !== 'object') return false;
   if (d.ai_overview && Object.keys(d.ai_overview).length) return true;
@@ -75,33 +111,42 @@ function hasAioInSerpapiData(d) {
   if (d.knowledge_graph && d.knowledge_graph.ai_overview) return true;
   return false;
 }
-function buildUule(loc) {
-  const b64 = Buffer.from(loc, 'utf8').toString('base64');
-  return `w+CAIQICI${b64}`;
-}
-function mergeHeadings(a, b) {
-  const out = { h1:[], h2:[], h3:[], h4:[], h5:[], h6:[] };
-  for (const k of Object.keys(out)) {
-    out[k] = [...(a[k]||[]), ...(b[k]||[])];
-  }
-  return out;
-}
 
-/** ============== SerpAPI single-location ============== **/
-async function serpapiSingle({ query, location, google_domain, gl, hl, apiKey, aioProbeAlways, aioProbeHlFallback }) {
-  const primaryParams = {
+const AIO_TEXT_PATTERNS = [
+  /ai overview/i,
+  /overview from ai/i,
+  /generated by ai/i,
+  // French
+  /aperçu (?:par|de) l['’]ia/i, /généré par l['’]ia/i, /vue d['’]ensemble de l['’]ia/i,
+  // German
+  /ki[- ]?(?:übersicht|überblick)/i, /durch ki erstellt/i, /von ki generiert/i,
+  // Japanese (heuristic)
+  /ai[ 　]?概要/i, /ai[ 　]?による概要/i, /ai[ 　]?によって生成/i,
+  // Spanish
+  /resumen de ia/i, /descripción general de ia/i, /generado por ia/i,
+  // Italian
+  /panoramica (?:ia|dell['’]ia)/i, /generat[ao] dall['’]ia/i,
+  // Dutch
+  /ai[- ]?overzicht/i, /gegenereerd door ai/i
+];
+
+/** ====================== SerpAPI ====================== **/
+async function serpapiSingle({ query, location, google_domain, gl, hl, apiKey, num, safe, lr, aioProbeAlways, aioProbeHlFallback }) {
+  const params = {
     engine: 'google',
     q: query,
     location,
     google_domain,
     gl,
     hl,
-    num: 10,
+    num,
     device: 'desktop',
+    safe,
     no_cache: true,
     api_key: apiKey
   };
-  const { data } = await axios.get('https://serpapi.com/search.json', { params: primaryParams, timeout: 60000 });
+  if (lr) params.lr = lr;
+  const { data } = await axios.get('https://serpapi.com/search.json', { params, timeout: 60000 });
   const urls = (data.organic_results || []).map(r => r.link).filter(Boolean);
   const features = {
     FeaturedSnippet: !!(data.answer_box || data.featured_snippet),
@@ -111,6 +156,7 @@ async function serpapiSingle({ query, location, google_domain, gl, hl, apiKey, a
     Video: !!(data.inline_videos || data.video_results),
     AIOverview: hasAioInSerpapiData(data)
   };
+  let aioProbeUsed = false;
   if (!features.AIOverview && (aioProbeAlways || hl.toLowerCase() !== 'en')) {
     const probeParams = {
       engine: 'google_ai_overview',
@@ -124,13 +170,15 @@ async function serpapiSingle({ query, location, google_domain, gl, hl, apiKey, a
     try {
       const { data: aio } = await axios.get('https://serpapi.com/search.json', { params: probeParams, timeout: 45000 });
       if (aio && aio.ai_overview && Object.keys(aio.ai_overview).length) features.AIOverview = true;
+      aioProbeUsed = true;
     } catch {}
   }
-  return { urls, features, raw: data };
+  const google_url = data?.search_metadata?.google_url || null;
+  return { urls, features, raw: data, google_url, aioProbeUsed };
 }
 
-/** ============== HTML verify (optional) ============== **/
-async function verifySerpOnGoogleHtml({ query, location, google_domain, gl, hl, extraWaitMs }) {
+/** ====================== HTML verify (optional) ====================== **/
+async function verifyOnHtml({ query, google_url, google_domain, gl, hl, location, extraWaitMs }) {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     locale: hl,
@@ -138,8 +186,7 @@ async function verifySerpOnGoogleHtml({ query, location, google_domain, gl, hl, 
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
   });
   const page = await context.newPage();
-  const uule = buildUule(location);
-  const url = `https://www.${google_domain}/search?q=${encodeURIComponent(query)}&uule=${encodeURIComponent(uule)}&hl=${encodeURIComponent(hl)}&gl=${gl}&num=10&pws=0`;
+  const url = google_url || `https://www.${google_domain}/search?q=${encodeURIComponent(query)}&hl=${encodeURIComponent(hl)}&gl=${gl}&num=10&pws=0`;
   await page.goto(url, { waitUntil: 'networkidle' });
   await page.waitForTimeout(1500);
   try {
@@ -161,7 +208,7 @@ async function verifySerpOnGoogleHtml({ query, location, google_domain, gl, hl, 
         y += 700 * dir;
         steps++;
         if (y > 2800) dir = -1;
-        if (steps < 12) setTimeout(step, 180);
+        if (steps < 14) setTimeout(step, 160);
         else res();
       };
       step();
@@ -169,36 +216,22 @@ async function verifySerpOnGoogleHtml({ query, location, google_domain, gl, hl, 
   });
   if (extraWaitMs) await page.waitForTimeout(parseInt(extraWaitMs,10));
 
-  const AIO_STRINGS = [
-    /ai overview/i,
-    /overview from ai/i,
-    /generated by ai/i,
-    /ai overviews?/i,
-    /this answer is generated/i
-  ];
-
-  const features = await page.evaluate((AIO_STRINGS_SRC) => {
-    const AIO_STRINGS = AIO_STRINGS_SRC.map(s => new RegExp(s.source, s.flags));
-    function hasAioText() {
+  const features = await page.evaluate((AIO_RX_SRC) => {
+    const AIO_RX = AIO_RX_SRC.map(s => new RegExp(s.source, s.flags));
+    const textHasAio = () => {
       const t = (document.body.innerText || '').toLowerCase();
-      return AIO_STRINGS.some(r => r.test(t));
-    }
-    const hasAioAria = !!document.querySelector('div[aria-label*="AI Overview" i], div[aria-label*="Overview from AI" i]');
-    const featuredSnippet = !!document.querySelector('[data-attrid="wa:/description"], [data-attrid="kc:/webanswers:wa"]');
-    const kp = !!document.querySelector('#kp-wp-tab-overview, [data-attrid="title"]');
-    const paa = !!document.querySelector('div[aria-label*="People also ask"], div[jsname="Cpkphb"]');
-    const video = !!document.querySelector('g-scrolling-carousel a[href*="youtube.com"], a[href*="watch?v="]');
-    const image = !!document.querySelector('g-scrolling-carousel img, div[data-hveid][data-ved] img');
-    return {
-      FeaturedSnippet: featuredSnippet,
-      KnowledgePanel: kp,
-      PeopleAlsoAsk: paa,
-      Video: video,
-      ImagePack: image,
-      AIOverviewLabel: hasAioAria,
-      AIOverviewText: hasAioText()
+      return AIO_RX.some(r => r.test(t));
     };
-  }, AIO_STRINGS);
+    return {
+      FeaturedSnippet: !!document.querySelector('[data-attrid="wa:/description"], [data-attrid="kc:/webanswers:wa"]'),
+      KnowledgePanel: !!document.querySelector('#kp-wp-tab-overview, [data-attrid="title"]'),
+      PeopleAlsoAsk: !!document.querySelector('div[aria-label*="People also ask"], div[jsname="Cpkphb"]'),
+      Video: !!document.querySelector('g-scrolling-carousel a[href*="youtube.com"], a[href*="watch?v="]'),
+      ImagePack: !!document.querySelector('g-scrolling-carousel img, div[data-hveid][data-ved] img'),
+      AIOverviewLabel: !!document.querySelector('div[aria-label*="AI Overview" i], div[aria-label*="Overview from AI" i]'),
+      AIOverviewText: textHasAio()
+    };
+  }, AIO_TEXT_PATTERNS);
 
   const out = {
     FeaturedSnippet: features.FeaturedSnippet,
@@ -209,13 +242,12 @@ async function verifySerpOnGoogleHtml({ query, location, google_domain, gl, hl, 
     AIOverview: features.AIOverviewLabel || features.AIOverviewText || genAiNetworkSeen,
     Signals: { AIOverviewLabel: features.AIOverviewLabel, AIOverviewText: features.AIOverviewText, genAiNetworkSeen }
   };
-
   await context.close();
   await browser.close();
   return { url, features: out };
 }
 
-/** ============== Headings extraction with iframe traversal ============== **/
+/** ====================== Headings extraction ====================== **/
 async function extractHeadingsInFrame(frame, opts) {
   return await frame.evaluate(({ includeHidden, headingLike }) => {
     function normalize(t){ return (t || '').replace(/\s+/g,' ').trim(); }
@@ -244,17 +276,12 @@ async function extractHeadingsInFrame(frame, opts) {
       seen.add(sig);
       out[key].push(text);
     };
-
-    for (const root of deepRoots()) {
-      ['h1','h2','h3','h4','h5','h6'].forEach(tag => root.querySelectorAll(tag).forEach(el => push(tag, el)));
-    }
-    for (const root of deepRoots()) {
-      root.querySelectorAll('[role="heading"]').forEach(el => {
-        let lv = parseInt(el.getAttribute('aria-level'),10);
-        if (!Number.isFinite(lv) || lv < 1 || lv > 6) lv = 2;
-        push(`h${lv}`, el);
-      });
-    }
+    for (const root of deepRoots()) ['h1','h2','h3','h4','h5','h6'].forEach(tag => root.querySelectorAll(tag).forEach(el => push(tag, el)));
+    for (const root of deepRoots()) root.querySelectorAll('[role="heading"]').forEach(el => {
+      let lv = parseInt(el.getAttribute('aria-level'),10);
+      if (!Number.isFinite(lv) || lv < 1 || lv > 6) lv = 2;
+      push(`h${lv}`, el);
+    });
     if (headingLike) {
       for (const root of deepRoots()) {
         const walker = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT);
@@ -283,9 +310,14 @@ async function extractHeadingsInFrame(frame, opts) {
   }, opts);
 }
 
-async function renderAndExtract(url, hl, {
-  extraWaitMs, scrollSteps, scrollStepPx, includeHidden, headingLike, respectNoindex, retryIfFewHeadings
-}) {
+function mergeHeadings(a, b) {
+  const out = { h1:[], h2:[], h3:[], h4:[], h5:[], h6:[] };
+  for (const k of Object.keys(out)) out[k] = [...(a[k]||[]), ...(b[k]||[])];
+  return out;
+}
+
+async function renderAndExtract(url, hl, opts) {
+  const { extraWaitMs, scrollSteps, scrollStepPx, includeHidden, headingLike, respectNoindex, retryIfFewHeadings } = opts;
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     locale: hl,
@@ -326,23 +358,20 @@ async function renderAndExtract(url, hl, {
   if (extraWaitMs) await page.waitForTimeout(extraWaitMs);
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
 
-  // Extract from main frame + same-origin iframes
+  // Main + same-origin iframes
   const frames = page.frames();
   let merged = { h1:[], h2:[], h3:[], h4:[], h5:[], h6:[] };
   const frameDebug = [];
   for (const f of frames) {
     try {
-      const sameOrigin = await f.evaluate(() => true); // will throw if cross-origin
+      const sameOrigin = await f.evaluate(() => true);
       if (!sameOrigin) continue;
       const h = await extractHeadingsInFrame(f, { includeHidden, headingLike });
       frameDebug.push({ url: f.url(), counts: { h1: h.h1.length, h2: h.h2.length, h3: h.h3.length, h4: h.h4.length, h5: h.h5.length, h6: h.h6.length } });
       merged = mergeHeadings(merged, h);
-    } catch {
-      // cross-origin frame, skip
-    }
+    } catch {}
   }
 
-  // If too few headings, one more gentle pass
   const total = merged.h1.length + merged.h2.length + merged.h3.length + merged.h4.length + merged.h5.length + merged.h6.length;
   if (total < retryIfFewHeadings) {
     await page.evaluate(async ({ scrollSteps, scrollStepPx }) => {
@@ -351,14 +380,13 @@ async function renderAndExtract(url, hl, {
         const step = () => {
           window.scrollBy(0, scrollStepPx);
           steps++;
-          if (steps < scrollSteps) setTimeout(step, 140);
+          if (steps < Math.max(10, Math.floor(scrollSteps * 1.2))) setTimeout(step, 140);
           else res();
         };
         step();
       });
-    }, { scrollSteps: Math.max(10, Math.floor(scrollSteps * 1.2)), scrollStepPx });
+    }, { scrollSteps, scrollStepPx });
     await page.waitForTimeout(extraWaitMs + 500);
-    // Re-extract main frame only to avoid duplicates from re-counting iframes
     try {
       const h2 = await extractHeadingsInFrame(page.mainFrame(), { includeHidden, headingLike });
       frameDebug.push({ url: page.url(), counts_retry: { h1: h2.h1.length, h2: h2.h2.length, h3: h2.h3.length, h4: h2.h4.length, h5: h2.h5.length, h6: h2.h6.length } });
@@ -376,7 +404,7 @@ async function renderAndExtract(url, hl, {
   return { url, meta, headings: merged, frameDebug };
 }
 
-/** ============== Output builders ============== **/
+/** ====================== Output ====================== **/
 function buildHeaderAndRows(pages) {
   const maxCols = { h1:0, h2:0, h3:0, h4:0, h5:0, h6:0 };
   for (const p of pages) for (const lv of ['h1','h2','h3','h4','h5','h6']) maxCols[lv] = Math.max(maxCols[lv], p.headings[lv]?.length || 0);
@@ -393,7 +421,6 @@ function buildHeaderAndRows(pages) {
   return { header, rows, maxCols };
 }
 
-/** ============== Sheets / CSV ============== **/
 async function uploadToGoogleSheet({ rows, header, sheetId, sheetName, serviceAccountKey }) {
   const auth = new google.auth.GoogleAuth({ keyFile: serviceAccountKey, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
   const sheets = google.sheets({ version: 'v4', auth });
@@ -413,14 +440,14 @@ async function uploadSerpSummaryToSheet({ summary, sheetId, serviceAccountKey })
   const sheets = google.sheets({ version: 'v4', auth });
   const tab = 'SERP_Summary';
   await sheets.spreadsheets.values.clear({ spreadsheetId: sheetId, range: `${tab}!A:ZZ` });
-  const header = ['Source','Location','FeaturedSnippet','KnowledgePanel','PeopleAlsoAsk','ImagePack','Video','AIOverview','Signals'];
+  const header = ['Source','Location','TopN','FeaturedSnippet','KnowledgePanel','PeopleAlsoAsk','ImagePack','Video','AIOverview','Signals','GoogleURL','AioProbeUsed'];
   const values = [header];
   const f = summary.features || {};
-  values.push(['SerpAPI', summary.location, !!f.FeaturedSnippet, !!f.KnowledgePanel, !!f.PeopleAlsoAsk, !!f.ImagePack, !!f.Video, !!f.AIOverview, '—']);
+  values.push(['SerpAPI', summary.location, summary.num, !!f.FeaturedSnippet, !!f.KnowledgePanel, !!f.PeopleAlsoAsk, !!f.ImagePack, !!f.Video, !!f.AIOverview, '—', summary.google_url || '—', summary.aioProbeUsed || false]);
   if (summary.verify) {
     const v = summary.verify.features;
     values.push([]);
-    values.push(['Playwright', summary.location, !!v.FeaturedSnippet, !!v.KnowledgePanel, !!v.PeopleAlsoAsk, !!v.ImagePack, !!v.Video, !!v.AIOverview, JSON.stringify(v.Signals || {})]);
+    values.push(['HTML', summary.location, summary.num, !!v.FeaturedSnippet, !!v.KnowledgePanel, !!v.PeopleAlsoAsk, !!v.ImagePack, !!v.Video, !!v.AIOverview, JSON.stringify(v.Signals || {}), summary.verify.url, '—']);
   }
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
@@ -430,29 +457,33 @@ async function uploadSerpSummaryToSheet({ summary, sheetId, serviceAccountKey })
   });
   console.log(`✅ SERP summary uploaded to tab: ${tab}`);
 }
+
 async function writeCsv(path, header, rows) {
   const csvWriter = createObjectCsvWriter({ path, header });
   await csvWriter.writeRecords(rows);
   console.log(`💾 Wrote ${path}`);
 }
 
-/** ============== Main ============== **/
+/** ====================== Main ====================== **/
 (async () => {
   const argv = parseArgs();
 
-  // 1) SerpAPI single-location
-  const { urls, features, raw } = await serpapiSingle({
+  // 1) SerpAPI (single location, parity-first)
+  const { urls, features, raw, google_url, aioProbeUsed } = await serpapiSingle({
     query: argv.query,
     location: argv.location,
     google_domain: argv.google_domain,
     gl: argv.gl,
     hl: argv.hl,
     apiKey: argv.apiKey,
+    num: argv.num,
+    safe: argv.safe,
+    lr: argv.lr,
     aioProbeAlways: argv.aioProbeAlways,
     aioProbeHlFallback: argv.aioProbeHlFallback
   });
 
-  // 2) Render + extract headings (preserve order)
+  // 2) Render + extract headings from the first maxUnique URLs
   const top = urls.slice(0, argv.maxUnique);
   const pages = [];
   const debug = [];
@@ -485,15 +516,16 @@ async function writeCsv(path, header, rows) {
 
   const { header, rows, maxCols } = buildHeaderAndRows(pages);
 
-  // 3) Optional verify on HTML
+  // 3) HTML verify (optional), using SerpAPI google_url for perfect parity
   let verify = null;
   if (argv.verifySerpWithPlaywright) {
-    verify = await verifySerpOnGoogleHtml({
+    verify = await verifyOnHtml({
       query: argv.query,
-      location: argv.location,
+      google_url,
       google_domain: argv.google_domain,
       gl: argv.gl,
       hl: argv.hl,
+      location: argv.location,
       extraWaitMs: argv.extraWaitMs
     });
   }
@@ -505,8 +537,11 @@ async function writeCsv(path, header, rows) {
     google_domain: argv.google_domain,
     gl: argv.gl,
     hl: argv.hl,
+    num: argv.num,
     features,
     verify,
+    google_url,
+    aioProbeUsed,
     raw_sample: raw?.search_metadata ? {
       google_url: raw.search_metadata.google_url,
       created_at: raw.search_metadata.created_at
@@ -514,7 +549,7 @@ async function writeCsv(path, header, rows) {
     heading_max_cols: maxCols
   };
 
-  // Write debug
+  // Debug
   fs.writeFileSync('headings_debug.json', JSON.stringify({ pages: debug, maxCols }, null, 2));
 
   if (argv.sheetId && argv.serviceAccountKey) {
@@ -524,5 +559,6 @@ async function writeCsv(path, header, rows) {
     await writeCsv('serp_headings.csv', header, rows);
     fs.writeFileSync('serp_summary.json', JSON.stringify(summary, null, 2));
   }
+
   console.log('Done.');
 })().catch(e => { console.error(e); process.exit(1); });
