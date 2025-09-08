@@ -2,47 +2,45 @@
 # STEP 1: Install dependencies
 # ============================================
 !pip -q install extruct w3lib[html] lxml tldextract httpx[http2] selectolax[parser] pandas tqdm aiohttp aiolimiter urllib3==2.2.2
-# Optional, if you need JS-rendered schema:
+# Optional, if you need JS-rendered schema (slower):
 # !pip -q install playwright
 # !playwright install chromium
 
 # ============================================
-# STEP 2: Mount Google Drive
+# STEP 2: Config (prompts)
 # ============================================
-from google.colab import drive
-drive.mount('/content/drive', force_remount=True)
-
+from urllib.parse import urlparse
 import os, datetime
 
-# Timestamped output folder in Drive
-ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-DRIVE_OUT = f"/content/drive/MyDrive/schema_audit/{ts}"
-os.makedirs(DRIVE_OUT, exist_ok=True)
-
-print("Results will be saved to:", DRIVE_OUT)
-
-# ============================================
-# STEP 3: Config
-# ============================================
 DOMAIN = input("Enter the full domain URL (e.g., https://www.example.com): ").strip()
+try:
+    MAX_PAGES = int(input("Max pages to crawl (e.g., 2000): ").strip())
+except:
+    MAX_PAGES = 2000
 
-MAX_PAGES         = 500                         # crawl budget
-PRIORITY          = "both"                      # "sitemap" | "crawl" | "both"
+PRIORITY          = "both"      # "sitemap" | "crawl" | "both"
 RESPECT_ROBOTS    = True
 REQUESTS_PER_SEC  = 3
 TIMEOUT_SECS      = 20
-RENDER_JS         = False                       # True if schema is injected via JS
+RENDER_JS         = False       # True only if schema is injected via JS
 INCLUDE_QUERYSTR  = False
-ALLOWED_PATHS     = []                          # e.g., ["/ja_JP/"]
+ALLOWED_PATHS     = []          # e.g., ["/ja_JP/"]
 EXCLUDE_PATHS     = ["/wp-admin", "/cart", "/checkout"]
 USER_AGENT        = "SchemaAuditBot/1.0 (+https://github.com/)"
 
-OUT_PREFIX = os.path.join(DRIVE_OUT, "schema_audit")  # save straight to Drive
-print(f"Crawling domain: {DOMAIN}")
+# Local output folder & prefix
+ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+hostname = urlparse(DOMAIN).netloc.replace(":", "_")
+OUT_DIR = f"/content/schema_audit_{hostname}_{ts}"
+os.makedirs(OUT_DIR, exist_ok=True)
+OUT_PREFIX = os.path.join(OUT_DIR, "schema_audit")
 
+print(f"\nCrawling: {DOMAIN}")
+print(f"Max pages: {MAX_PAGES}")
+print(f"Saving to: {OUT_DIR}")
 
 # ============================================
-# STEP 4: Utilities (crawling + schema extract)
+# STEP 3: Utilities (crawling + schema extract)
 # ============================================
 import re, asyncio, urllib.parse, io, json
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -51,7 +49,6 @@ import tldextract, pandas as pd
 from tqdm.auto import tqdm
 import aiohttp
 from aiolimiter import AsyncLimiter
-from w3lib.html import get_base_url
 from selectolax.parser import HTMLParser
 import lxml.etree as ET
 import extruct
@@ -113,11 +110,17 @@ async def extract_links(html, base_url):
             if not href: continue
             url = normalize_url(href, base=base_url, strip_query=not INCLUDE_QUERYSTR)
             links.add(url)
-    except: pass
+    except: 
+        pass
     return links
 
-async def crawl(root, mode="sitemap", max_pages=100):
-    results, errors, seen, queue = [], [], set(), [root]
+async def crawl(root, mode="sitemap", max_pages=1000):
+    results, errors, seen = [], [], set()
+    queue = []
+
+    # Seed: use root; additional sitemap seeding is handled by attempting to fetch /sitemap.xml during crawl
+    queue.append(normalize_url(root, strip_query=not INCLUDE_QUERYSTR))
+
     limiter = AsyncLimiter(REQUESTS_PER_SEC, time_period=1)
     timeout = aiohttp.ClientTimeout(total=TIMEOUT_SECS)
     headers = {"User-Agent": USER_AGENT}
@@ -126,9 +129,11 @@ async def crawl(root, mode="sitemap", max_pages=100):
         pbar = tqdm(total=max_pages, desc="Crawling")
         while queue and len(seen) < max_pages:
             url = queue.pop(0)
-            if url in seen or not is_same_site(url, root): continue
+            if url in seen or not is_same_site(url, root): 
+                continue
             if not allowed_path(urlparse(url).path, ALLOWED_PATHS, EXCLUDE_PATHS):
                 continue
+
             seen.add(url)
             try:
                 async with limiter:
@@ -145,47 +150,107 @@ async def crawl(root, mode="sitemap", max_pages=100):
                 results.append({
                     "url": url,
                     "has_schema": bool(sd_items),
-                    "schema_types": list(set(map(str, schema_types))),
+                    "schema_types": sorted(set(map(str, schema_types))),
                     "num_items": len(sd_items),
                     "raw": data or {}
                 })
+
+                # Follow internal links
                 if mode in ("crawl","both"):
                     new_links = await extract_links(html, url)
-                    queue.extend(new_links - seen)
+                    for link in new_links:
+                        if link not in seen and is_same_site(link, root):
+                            if allowed_path(urlparse(link).path, ALLOWED_PATHS, EXCLUDE_PATHS):
+                                queue.append(link)
+
                 pbar.update(1)
             except Exception as e:
                 errors.append({"url": url, "error": str(e)})
         pbar.close()
+
     return results, errors
 
 # ============================================
-# STEP 5: Run the crawl & Save results
+# STEP 4: Run the crawl & save CSVs locally
 # ============================================
 results, errors = await crawl(DOMAIN, mode=PRIORITY, max_pages=MAX_PAGES)
 
+import pandas as pd
+
 df = pd.DataFrame(results)
+
 if df.empty:
-    print("No pages crawled.")
+    print("No pages crawled. Check domain, network, or restrictions.")
+    # Still emit empty files for consistency
+    pd.DataFrame(columns=["url","schema_types","num_items"]).to_csv(f"{OUT_PREFIX}_pages_with_schema.csv", index=False)
+    pd.DataFrame(columns=["url"]).to_csv(f"{OUT_PREFIX}_pages_without_schema.csv", index=False)
+    pd.DataFrame(columns=["pages_with_type"]).to_csv(f"{OUT_PREFIX}_per_type.csv")
+    pd.DataFrame(columns=["url","raw"]).to_csv(f"{OUT_PREFIX}_raw.csv", index=False)
+    pd.DataFrame(errors).to_csv(f"{OUT_PREFIX}_errors.csv", index=False)
 else:
     total = len(df)
     with_sd = int(df["has_schema"].sum())
-    coverage = (with_sd / total * 100)
-    print(f"Total: {total}, With schema: {with_sd}, Coverage: {coverage:.2f}%")
+    coverage = (with_sd / total * 100) if total else 0.0
 
+    print(f"Total pages crawled: {total}")
+    print(f"Pages with schema:   {with_sd}")
+    print(f"Coverage:            {coverage:.2f}%")
+
+    # Save main tables
     df.to_csv(f"{OUT_PREFIX}_raw.csv", index=False)
     df[df["has_schema"]].to_csv(f"{OUT_PREFIX}_pages_with_schema.csv", index=False)
     df[~df["has_schema"]].to_csv(f"{OUT_PREFIX}_pages_without_schema.csv", index=False)
 
-    # per-type summary
+    # Per-type (pages using each @type at least once)
     df_types = df.explode("schema_types")
-    if "schema_types" in df_types and df_types["schema_types"].notna().any():
+    if "schema_types" in df_types.columns and df_types["schema_types"].notna().any():
         per_type = (
-            df_types.groupby("schema_types")["url"]
-            .nunique().sort_values(ascending=False).rename("pages_with_type")
+            df_types[df_types["schema_types"].notna()]
+            .groupby("schema_types")["url"]
+            .nunique()
+            .sort_values(ascending=False)
+            .rename("pages_with_type")
+            .to_frame()
         )
-        per_type.to_csv(f"{OUT_PREFIX}_per_type.csv")
-        display(per_type.head(20))
+    else:
+        per_type = pd.DataFrame(columns=["pages_with_type"])
 
+    per_type.to_csv(f"{OUT_PREFIX}_per_type.csv")
+
+    # Errors, if any
     pd.DataFrame(errors).to_csv(f"{OUT_PREFIX}_errors.csv", index=False)
 
-print("\nSaved to Drive:", DRIVE_OUT)
+    print("\nSaved files:")
+    for fn in sorted(os.listdir(OUT_DIR)):
+        print(" -", fn)
+
+# ============================================
+# STEP 5: (Optional) Quick peek at top schema types
+# ============================================
+try:
+    import pandas as pd, os
+    per_type_path = f"{OUT_PREFIX}_per_type.csv"
+    if os.path.exists(per_type_path):
+        per_type_df = pd.read_csv(per_type_path)
+        display(per_type_df.head(20))
+    else:
+        print("No per-type file found (likely no schema detected).")
+except Exception as e:
+    print("Preview error:", e)
+
+# ============================================
+# STEP 6: ZIP the results and download
+# ============================================
+import shutil, os
+from google.colab import files
+
+zip_path = f"{OUT_DIR}.zip"
+if os.path.exists(zip_path):
+    os.remove(zip_path)
+
+shutil.make_archive(OUT_DIR, 'zip', OUT_DIR)
+print("Created ZIP:", zip_path)
+
+# Trigger browser download
+files.download(zip_path)
+
