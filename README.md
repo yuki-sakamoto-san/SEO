@@ -24,7 +24,10 @@ It scrapes the top 10 results for a specified location and query, running the jo
 
 **Note** Make sure to obtain your Google API Key and [Custom Search Engine](https://console.cloud.google.com/apis/) ID first! You can get your API Key at Google Cloud Console and your [Custom Search Engine ID](https://developers.google.com/custom-search/v1/introduction) at Google Custom Search.
 
-### AI Promot 
-Use it for Gemini AI Agent if your company has it installed then feed my JS file (single location scraper v2)
+### Gemini AI Agent Scraper - SEO 
+
+SEO-SERPHeadingsAgent.js can be integrated into your Gemini (Enterprise) Gem — a customized AI Agent — to scrape the top 10 search results from any country, language, or location worldwide. It helps you understand what type of content to create, recommends optimal content structures, and highlights whether you should include images or videos. It also identifies existing SERP opportunities for your target queries. 
+
+Simply download the file and upload it into Gemini as part of your knowledge base.
 
 
