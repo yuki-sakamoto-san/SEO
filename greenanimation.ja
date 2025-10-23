@@ -1,0 +1,33 @@
+(function() {
+  // Wait for the hero headline to exist in the DOM
+  function runAnimation() {
+    const h1 = document.querySelector('h1');
+    if (!h1) return; // exit if not found yet
+
+    // Add the class for your CSS animations
+    h1.classList.add('hero-anim');
+
+    // Typing effect
+    const text = h1.textContent.trim();
+    h1.textContent = '';
+    let i = 0;
+
+    function type() {
+      if (i < text.length) {
+        h1.textContent += text.charAt(i);
+        i++;
+        setTimeout(type, 70); // typing speed
+      }
+    }
+
+    type();
+  }
+
+  // Run after DOM is fully ready
+  const checkExist = setInterval(() => {
+    if (document.querySelector('h1')) {
+      clearInterval(checkExist);
+      runAnimation();
+    }
+  }, 200);
+})();
