@@ -1,0 +1,55 @@
+
+.hero-anim {
+  display: inline-block;
+  position: relative;
+  opacity: 0;
+  transform: translateY(15px);
+  animation: fadeInUp 1.2s ease-out forwards;
+  animation-delay: 0.3s;
+  will-change: transform, opacity;
+}
+
+/* --- Green Click Effect --- */
+.hero-anim::after {
+  content: "";
+  position: absolute;
+  bottom: 0.1em;               /* adjust vertically to sit just under baseline */
+  left: 0;
+  width: 8px;                  /* the size of the "click dot" */
+  height: 8px;
+  background: #00aa66;         /* Adyen green */
+  border-radius: 50%;          /* makes it round */
+  box-shadow: 0 0 6px #00aa66; /* glow effect */
+  animation: moveClick 2.5s ease-in-out infinite;
+}
+
+/* Moves the click dot left to right and back */
+@keyframes moveClick {
+  0% { transform: translateX(0) scale(1); opacity: 1; }
+  40% { transform: translateX(40px) scale(1.1); opacity: 1; }
+  50% { transform: translateX(42px) scale(0.8); opacity: 0.7; }
+  80% { transform: translateX(0) scale(1); opacity: 1; }
+  100% { transform: translateX(0) scale(1); opacity: 1; }
+}
+
+/* Base fade-in animation */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(15px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Accessibility */
+@media (prefers-reduced-motion: reduce) {
+  .hero-anim,
+  .hero-anim::after {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
