@@ -1,7 +1,12 @@
+/* ===========================================================
+   Animated Hero Text with Moving "Click" Dot Safe for Optimizely Visual Editor
+   =========================================================== */
 
+/* Base hero animation */
 .hero-anim {
-  display: inline-block;
-  position: relative;
+  position: relative !important;     /* ensures ::after positions correctly */
+  display: inline-block !important;  /* keeps pseudo-element attached */
+  overflow: visible !important;      /* prevents clipping of the dot */
   opacity: 0;
   transform: translateY(15px);
   animation: fadeInUp 1.2s ease-out forwards;
@@ -9,30 +14,23 @@
   will-change: transform, opacity;
 }
 
-/* --- Green Click Effect --- */
+/* The glowing green "click" dot */
 .hero-anim::after {
   content: "";
   position: absolute;
-  bottom: 0.1em;               /* adjust vertically to sit just under baseline */
-  left: 0;
-  width: 8px;                  /* the size of the "click dot" */
-  height: 8px;
-  background: #00aa66;         /* Adyen green */
-  border-radius: 50%;          /* makes it round */
-  box-shadow: 0 0 6px #00aa66; /* glow effect */
-  animation: moveClick 2.5s ease-in-out infinite;
+  bottom: -0.25em;                   /* adjust based on font baseline */
+  right: -16px;                      /* sits just after last character */
+  width: 10px;
+  height: 10px;
+  background: #00aa66;               /* Adyen green */
+  border-radius: 50%;
+  box-shadow: 0 0 8px 3px rgba(0,170,102,0.6);
+  animation: moveClick 2.6s ease-in-out infinite;
 }
 
-/* Moves the click dot left to right and back */
-@keyframes moveClick {
-  0% { transform: translateX(0) scale(1); opacity: 1; }
-  40% { transform: translateX(40px) scale(1.1); opacity: 1; }
-  50% { transform: translateX(42px) scale(0.8); opacity: 0.7; }
-  80% { transform: translateX(0) scale(1); opacity: 1; }
-  100% { transform: translateX(0) scale(1); opacity: 1; }
-}
+/* --- Keyframes --- */
 
-/* Base fade-in animation */
+/* Fade and lift-in animation for hero text */
 @keyframes fadeInUp {
   from {
     opacity: 0;
@@ -44,10 +42,36 @@
   }
 }
 
-/* Accessibility */
+/* Movement loop for the glowing dot */
+@keyframes moveClick {
+  0%   { transform: translateX(0) scale(1); opacity: 1; }
+  40%  { transform: translateX(10px) scale(1.1); opacity: 0.9; }
+  60%  { transform: translateX(0) scale(1); opacity: 1; }
+  100% { transform: translateX(0) scale(1); opacity: 1; }
+}
+
+/* Subtle pulsating glow around the dot */
+.hero-anim::before {
+  content: "";
+  position: absolute;
+  bottom: -0.25em;
+  right: -16px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(0,170,102,0.4);
+  animation: pulseGlow 2.6s ease-in-out infinite;
+}
+
+@keyframes pulseGlow {
+  0%   { transform: scale(1); opacity: 0.6; }
+  50%  { transform: scale(1.8); opacity: 0; }
+  100% { transform: scale(1); opacity: 0.6; }
+}
+
+/* Accessibility: disable animations if user prefers reduced motion */
 @media (prefers-reduced-motion: reduce) {
-  .hero-anim,
-  .hero-anim::after {
+  .hero-anim, .hero-anim::after, .hero-anim::before {
     animation: none !important;
     opacity: 1 !important;
     transform: none !important;
