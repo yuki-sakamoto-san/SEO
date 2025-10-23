@@ -1,31 +1,36 @@
 (function() {
-  // Wait for the hero headline to exist in the DOM
   function runAnimation() {
     const h1 = document.querySelector('h1');
-    if (!h1) return; // exit if not found yet
+    if (!h1) return;
 
-    // Add the class for your CSS animations
+    // Prevent re-animation if already run once
+    if (h1.dataset.animated === "true") return;
+    h1.dataset.animated = "true";
+
+    // Add animation class
     h1.classList.add('hero-anim');
 
-    // Typing effect
+    // Store original text safely
     const text = h1.textContent.trim();
-    h1.textContent = '';
+    h1.textContent = ''; // clear it
     let i = 0;
 
+    // Typing animation
     function type() {
       if (i < text.length) {
         h1.textContent += text.charAt(i);
         i++;
-        setTimeout(type, 70); // typing speed
+        setTimeout(type, 70);
       }
     }
 
     type();
   }
 
-  // Run after DOM is fully ready
+  // Wait until hero appears (Optimizely DOM may take time)
   const checkExist = setInterval(() => {
-    if (document.querySelector('h1')) {
+    const h1 = document.querySelector('h1');
+    if (h1 && !h1.dataset.animated) {
       clearInterval(checkExist);
       runAnimation();
     }
