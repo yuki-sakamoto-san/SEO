@@ -1,0 +1,43 @@
+/* === Animated Hero Text (Scoped to .hero-anim) === */
+
+/* Base styling */
+.hero-anim {
+  display: inline-block;             /* Prevents layout jump */
+  opacity: 0;                        /* Start invisible */
+  transform: translateY(15px);       /* Slight offset for motion */
+  animation: fadeInUp 1.2s ease-out forwards;
+  animation-delay: 0.3s;             /* Add delay for smoother entry */
+  will-change: transform, opacity;   /* Helps browser render smoothly */
+}
+
+/* Fade + Slide In Keyframes */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(15px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Optional: If you use typing JS later */
+.hero-anim.typing {
+  border-right: 2px solid #00aa66;   /* Adyen green cursor */
+  animation: typingCursor 0.8s steps(2) infinite;
+}
+
+@keyframes typingCursor {
+  from { border-color: transparent; }
+  to { border-color: #00aa66; }
+}
+
+/* Accessibility preference */
+@media (prefers-reduced-motion: reduce) {
+  .hero-anim {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
