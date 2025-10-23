@@ -1,0 +1,63 @@
+/* =====================================================
+    Animated Hero — Green Line (style)
+   ===================================================== */
+
+.hero-anim {
+  position: relative !important;
+  display: inline-block !important;
+  overflow: visible !important;
+  opacity: 0;
+  transform: translateY(15px);
+  animation: fadeInUp 1.2s ease-out forwards;
+  animation-delay: 0.3s;
+  will-change: transform, opacity;
+}
+
+/* Green line after last character */
+.hero-anim::after {
+  content: "";
+  position: absolute;
+  bottom: 0.1em;              /* aligns with text baseline */
+  right: -22px;               /* offset from last character */
+  width: 28px;                /* length of line */
+  height: 3px;                /* thickness */
+  background: #00aa66;        /* Adyen green */
+  border-radius: 2px;
+  transform-origin: left center;
+  transform: scaleX(0);
+  animation: lineGrow 1s ease-out forwards 1.4s, linePulse 3s ease-in-out infinite 2.6s;
+}
+
+/* Line grows from 0 to full width */
+@keyframes lineGrow {
+  from { transform: scaleX(0); opacity: 0; }
+  to   { transform: scaleX(1); opacity: 1; }
+}
+
+/* Subtle continuous pulse/glow */
+@keyframes linePulse {
+  0%   { box-shadow: 0 0 0px rgba(0,170,102,0.3); opacity: 1; }
+  50%  { box-shadow: 0 0 10px rgba(0,170,102,0.5); opacity: 0.9; }
+  100% { box-shadow: 0 0 0px rgba(0,170,102,0.3); opacity: 1; }
+}
+
+/* Fade-in animation for hero text */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(15px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Accessibility */
+@media (prefers-reduced-motion: reduce) {
+  .hero-anim, .hero-anim::after {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
